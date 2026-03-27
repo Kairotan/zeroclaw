@@ -158,6 +158,11 @@ async fn process_attachments(
                     tracing::warn!(name, error = %e, "discord attachment fetch error");
                 }
             }
+        } else if ct.starts_with("image/") {
+            // Emit an [IMAGE:url] marker so the multimodal pipeline can fetch
+            // and pass the image to vision-capable providers (e.g. Gemini).
+            tracing::debug!(name, content_type = ct, "discord: emitting image marker");
+            parts.push(format!("[IMAGE:{url}]"));
         } else {
             tracing::debug!(
                 name,
