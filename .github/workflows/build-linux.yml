@@ -48,7 +48,7 @@ jobs:
           path: web/dist/
       - name: Install build dependencies
         run: |
-          dnf install -y gcc curl
+          dnf install -y gcc
       - name: Install Rust
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.93.0
