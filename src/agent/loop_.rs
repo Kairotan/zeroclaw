@@ -2992,13 +2992,23 @@ pub(crate) async fn run_tool_call_loop(
                 if mgr.is_session_blocked(channel_name, &tool_name) {
                     let denied = format!("{tool_name} is blocked for this session.");
                     if let Some(ref tx) = on_delta {
-                        let _ = tx.send(DraftEvent::Text(denied.clone())).await;
+                        let _ = tx
+                            .send(DraftEvent::Progress(format!(
+                                "\u{274c} {}: {}\n",
+                                tool_name, denied
+                            )))
+                            .await;
                     }
-                    tool_results.push(ToolResult {
-                        tool_use_id: tool_use_id.clone(),
-                        content: denied,
-                        is_error: true,
-                    });
+                    ordered_results[idx] = Some((
+                        tool_name.clone(),
+                        call.tool_call_id.clone(),
+                        ToolExecutionOutcome {
+                            output: denied.clone(),
+                            success: false,
+                            error_reason: Some(denied),
+                            duration: Duration::ZERO,
+                        },
+                    ));
                     continue;
                 }
 
