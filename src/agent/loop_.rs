@@ -2988,6 +2988,20 @@ pub(crate) async fn run_tool_call_loop(
 
             // ── Approval hook ────────────────────────────────
             if let Some(mgr) = approval {
+                // Session-blocked tools are denied immediately without prompting.
+                if mgr.is_session_blocked(channel_name, &tool_name) {
+                    let denied = format!("{tool_name} is blocked for this session.");
+                    if let Some(ref tx) = on_delta {
+                        let _ = tx.send(DraftEvent::Text(denied.clone())).await;
+                    }
+                    tool_results.push(ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content: denied,
+                        is_error: true,
+                    });
+                    continue;
+                }
+
                 if mgr.needs_approval(&tool_name) {
                     let request = ApprovalRequest {
                         tool_name: tool_name.clone(),
@@ -2995,18 +3009,29 @@ pub(crate) async fn run_tool_call_loop(
                     };
 
                     // Interactive CLI: prompt the operator.
-                    // Non-interactive (channels): auto-deny since no operator
-                    // is present to approve.
+                    // Non-interactive (channels): try button approval for
+                    // channels that support it (e.g. Discord); other channels
+                    // and timed-out prompts fall back to auto-deny.
                     let decision = if mgr.is_non_interactive() {
-                        ApprovalResponse::No
+                        mgr.prompt_channel_async(
+                            &request,
+                            channel_name,
+                            channel_reply_target.unwrap_or(channel_name),
+                        )
+                        .await
+                        .unwrap_or(ApprovalResponse::No)
                     } else {
                         mgr.prompt_cli(&request)
                     };
 
                     mgr.record_decision(&tool_name, &tool_args, decision, channel_name);
 
-                    if decision == ApprovalResponse::No {
-                        let denied = "Denied by user.".to_string();
+                    if decision == ApprovalResponse::No || decision == ApprovalResponse::Block {
+                        let denied = if decision == ApprovalResponse::Block {
+                            format!("{tool_name} blocked for this session.")
+                        } else {
+                            "Denied by user.".to_string()
+                        };
                         runtime_trace::record_event(
                             "tool_call_result",
                             Some(channel_name),

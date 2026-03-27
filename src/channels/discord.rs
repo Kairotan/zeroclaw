@@ -18,6 +18,9 @@ pub struct DiscordChannel {
     listen_to_bots: bool,
     mention_only: bool,
     typing_handles: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Shared pending-approval map — written by the approval manager, read by
+    /// the WebSocket listener when an INTERACTION_CREATE (button click) arrives.
+    pending_approvals: crate::approval::PendingApprovals,
     /// Per-channel proxy URL override.
     proxy_url: Option<String>,
     /// Voice transcription config — when set, audio attachments are
@@ -53,6 +56,7 @@ impl DiscordChannel {
             listen_to_bots,
             mention_only,
             typing_handles: Mutex::new(HashMap::new()),
+            pending_approvals: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             proxy_url: None,
             transcription: None,
             transcription_manager: None,
@@ -797,10 +801,89 @@ fn base64_decode(input: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Send a Discord message with Yes / No / Always approval buttons.
+///
+/// `discord_channel_id` is the Discord channel snowflake to post into.
+/// `approval_id` is a UUID that will be embedded in each button's `custom_id`
+/// so the listener can route the click back to the right pending approval.
+pub async fn send_approval_buttons(
+    bot_token: &str,
+    proxy_url: Option<&str>,
+    discord_channel_id: &str,
+    approval_id: &str,
+    request: &crate::approval::ApprovalRequest,
+) -> anyhow::Result<()> {
+    let client =
+        crate::config::build_channel_proxy_client("channel.discord.approval", proxy_url);
+    let summary = {
+        let s = request.arguments.to_string();
+        if s.len() > 300 {
+            format!("{}...", &s[..300])
+        } else {
+            s
+        }
+    };
+    let content = format!(
+        "**Approval required**\nTool: `{}`\n```\n{}\n```",
+        request.tool_name, summary
+    );
+    let body = serde_json::json!({
+        "content": content,
+        "components": [{
+            "type": 1,
+            "components": [
+                {
+                    "type": 2, "style": 3,
+                    "label": "Yes",
+                    "custom_id": format!("zc:approval:yes:{approval_id}")
+                },
+                {
+                    "type": 2, "style": 4,
+                    "label": "No",
+                    "custom_id": format!("zc:approval:no:{approval_id}")
+                },
+                {
+                    "type": 2, "style": 1,
+                    "label": "Always",
+                    "custom_id": format!("zc:approval:always:{approval_id}")
+                },
+                {
+                    "type": 2, "style": 4,
+                    "label": "Block",
+                    "custom_id": format!("zc:approval:block:{approval_id}")
+                }
+            ]
+        }]
+    });
+    let url = format!(
+        "https://discord.com/api/v10/channels/{discord_channel_id}/messages"
+    );
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .json(&body)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("send_approval_buttons: Discord API {status} — {text}");
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Channel for DiscordChannel {
     fn name(&self) -> &str {
         "discord"
+    }
+
+    fn supports_approval_buttons(&self) -> bool {
+        true
+    }
+
+    fn pending_approvals(&self) -> Option<crate::approval::PendingApprovals> {
+        Some(self.pending_approvals.clone())
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
@@ -1040,8 +1123,58 @@ impl Channel for DiscordChannel {
                         _ => {}
                     }
 
-                    // Only handle MESSAGE_CREATE (opcode 0, type "MESSAGE_CREATE")
                     let event_type = event.get("t").and_then(|t| t.as_str()).unwrap_or("");
+
+                    // ── INTERACTION_CREATE: button clicks from approval prompts ──
+                    if event_type == "INTERACTION_CREATE" {
+                        let Some(d) = event.get("d") else { continue; };
+                        // Only handle MESSAGE_COMPONENT (type 3) interactions.
+                        if d.get("type").and_then(|t| t.as_u64()) != Some(3) {
+                            continue;
+                        }
+                        let interaction_id =
+                            d.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let interaction_token =
+                            d.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                        let custom_id = d
+                            .get("data")
+                            .and_then(|data| data.get("custom_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        // Parse "zc:approval:<yes|no|always>:<uuid>"
+                        let parts: Vec<&str> = custom_id.splitn(4, ':').collect();
+                        if parts.len() == 4 && parts[0] == "zc" && parts[1] == "approval" {
+                            let response = match parts[2] {
+                                "yes" => crate::approval::ApprovalResponse::Yes,
+                                "always" => crate::approval::ApprovalResponse::Always,
+                                "block" => crate::approval::ApprovalResponse::Block,
+                                _ => crate::approval::ApprovalResponse::No,
+                            };
+                            let approval_id = parts[3].to_string();
+                            let sender = self.pending_approvals.lock().await.remove(&approval_id);
+                            if let Some(tx) = sender {
+                                let _ = tx.send(response);
+                            }
+                            // Acknowledge interaction — Discord requires a response within 3 s.
+                            let ack_url = format!(
+                                "https://discord.com/api/v10/interactions/{interaction_id}/{interaction_token}/callback"
+                            );
+                            let _ = self
+                                .http_client()
+                                .post(&ack_url)
+                                .header(
+                                    "Authorization",
+                                    format!("Bot {}", self.bot_token),
+                                )
+                                .json(&serde_json::json!({"type": 6}))
+                                .send()
+                                .await;
+                        }
+                        continue;
+                    }
+
+                    // Only handle MESSAGE_CREATE events below.
                     if event_type != "MESSAGE_CREATE" {
                         continue;
                     }

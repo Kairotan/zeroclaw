@@ -5467,7 +5467,57 @@ pub async fn start_channels(config: Config) -> Result<()> {
         } else {
             None
         },
-        approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
+        approval_manager: {
+            // If any channel supports button-based approval (currently only Discord),
+            // wire up the bridge so the approval manager can prompt the user instead
+            // of auto-denying.  Messages from every other channel still auto-deny —
+            // the channel_name gate inside prompt_channel_async ensures no API calls
+            // are made on their behalf.
+            let bridge = channels.iter().find_map(|ch| {
+                if !ch.supports_approval_buttons() {
+                    return None;
+                }
+                let pending = ch.pending_approvals()?;
+                let channel_name = ch.name().to_string();
+                let bot_token = config
+                    .channels_config
+                    .discord
+                    .as_ref()
+                    .map(|dc| dc.bot_token.clone())
+                    .unwrap_or_default();
+                let proxy_url = config
+                    .channels_config
+                    .discord
+                    .as_ref()
+                    .and_then(|dc| dc.proxy_url.clone());
+                let prompt_fn: crate::approval::PromptFn = std::sync::Arc::new(
+                    move |approval_id, channel_id, request| {
+                        let bot_token = bot_token.clone();
+                        let proxy_url = proxy_url.clone();
+                        Box::pin(async move {
+                            discord::send_approval_buttons(
+                                &bot_token,
+                                proxy_url.as_deref(),
+                                &channel_id,
+                                &approval_id,
+                                &request,
+                            )
+                            .await
+                        })
+                    },
+                );
+                Some(crate::approval::ChannelApproval {
+                    channel_name,
+                    pending,
+                    prompt_fn,
+                    timeout_secs: config.sop.approval_timeout_secs,
+                })
+            });
+            match bridge {
+                Some(ca) => Arc::new(ApprovalManager::with_channel_approval(&config.autonomy, ca)),
+                None => Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
+            }
+        },
         activated_tools: ch_activated_handle,
         cost_tracking: crate::cost::CostTracker::get_or_init_global(
             config.cost.clone(),
