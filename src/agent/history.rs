@@ -55,6 +55,29 @@ pub(crate) fn truncate_tool_result(output: &str, max_chars: usize) -> String {
     )
 }
 
+/// Trim a tool message's content string, preserving JSON structure for native tool calls.
+///
+/// Native tool results are stored as JSON `{"tool_call_id": "...", "content": "..."}`.
+/// Truncating the raw JSON string breaks it, so `convert_messages` can no longer extract
+/// `tool_call_id`, causing providers like Google AI Studio to reject the message with
+/// "Tool message must have either name or tool_call_id". This function parses the JSON
+/// wrapper when present and truncates only the inner `content` field.
+pub(crate) fn trim_tool_message_content(content: &str, max_chars: usize) -> String {
+    if max_chars == 0 || content.len() <= max_chars {
+        return content.to_string();
+    }
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(content) {
+        if value.is_object() && value.get("tool_call_id").is_some() {
+            if let Some(inner) = value.get("content").and_then(|v| v.as_str()).map(str::to_string) {
+                let truncated = truncate_tool_result(&inner, max_chars);
+                value["content"] = serde_json::Value::String(truncated);
+                return value.to_string();
+            }
+        }
+    }
+    truncate_tool_result(content, max_chars)
+}
+
 /// Aggressively trim old tool result messages in history to recover from
 /// context overflow. Keeps the last `protect_last_n` messages untouched.
 /// Returns total characters saved.
@@ -68,7 +91,7 @@ pub(crate) fn fast_trim_tool_results(
     for msg in &mut history[..cutoff] {
         if msg.role == "tool" && msg.content.len() > trim_to {
             let original_len = msg.content.len();
-            msg.content = truncate_tool_result(&msg.content, trim_to);
+            msg.content = trim_tool_message_content(&msg.content, trim_to);
             saved += original_len - msg.content.len();
         }
     }

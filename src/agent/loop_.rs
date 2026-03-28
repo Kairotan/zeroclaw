@@ -44,7 +44,7 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 pub(crate) use super::history::{
     emergency_history_trim, estimate_history_tokens, fast_trim_tool_results,
     load_interactive_session_history, save_interactive_session_history, trim_history,
-    truncate_tool_result,
+    trim_tool_message_content, truncate_tool_result,
 };
 
 /// Minimum user-message length (in chars) for auto-save to memory.
