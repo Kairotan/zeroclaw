@@ -1,8 +1,6 @@
 name: Build Linux aarch64
 
 on:
-  push:
-    branches: [master, "feat/**", "fix/**"]
   workflow_dispatch:
 
 permissions:
