@@ -68,7 +68,11 @@ pub(crate) fn trim_tool_message_content(content: &str, max_chars: usize) -> Stri
     }
     if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(content) {
         if value.is_object() && value.get("tool_call_id").is_some() {
-            if let Some(inner) = value.get("content").and_then(|v| v.as_str()).map(str::to_string) {
+            if let Some(inner) = value
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+            {
                 let truncated = truncate_tool_result(&inner, max_chars);
                 value["content"] = serde_json::Value::String(truncated);
                 return value.to_string();

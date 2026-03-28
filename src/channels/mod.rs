@@ -5490,8 +5490,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
                     .discord
                     .as_ref()
                     .and_then(|dc| dc.proxy_url.clone());
-                let prompt_fn: crate::approval::PromptFn = std::sync::Arc::new(
-                    move |approval_id, channel_id, request| {
+                let prompt_fn: crate::approval::PromptFn =
+                    std::sync::Arc::new(move |approval_id, channel_id, request| {
                         let bot_token = bot_token.clone();
                         let proxy_url = proxy_url.clone();
                         Box::pin(async move {
@@ -5504,8 +5504,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
                             )
                             .await
                         })
-                    },
-                );
+                    });
                 Some(crate::approval::ChannelApproval {
                     channel_name,
                     pending,

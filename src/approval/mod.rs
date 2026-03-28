@@ -152,7 +152,10 @@ impl ApprovalManager {
     /// a specific channel (e.g. Discord buttons) when a message from that
     /// channel requires approval.  Messages from any other channel still
     /// auto-deny — no API calls are made for them.
-    pub fn with_channel_approval(config: &AutonomyConfig, channel_approval: ChannelApproval) -> Self {
+    pub fn with_channel_approval(
+        config: &AutonomyConfig,
+        channel_approval: ChannelApproval,
+    ) -> Self {
         Self {
             channel_approval: Some(channel_approval),
             ..Self::for_non_interactive(config)
@@ -293,12 +296,8 @@ impl ApprovalManager {
         let approval_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         ca.pending.lock().await.insert(approval_id.clone(), tx);
-        if let Err(e) = (ca.prompt_fn)(
-            approval_id.clone(),
-            channel_id.to_string(),
-            request.clone(),
-        )
-        .await
+        if let Err(e) =
+            (ca.prompt_fn)(approval_id.clone(), channel_id.to_string(), request.clone()).await
         {
             tracing::warn!("Approval button prompt failed: {e}");
             ca.pending.lock().await.remove(&approval_id);
@@ -324,7 +323,10 @@ fn prompt_cli_interactive(request: &ApprovalRequest) -> ApprovalResponse {
     eprintln!();
     eprintln!("🔧 Agent wants to execute: {}", request.tool_name);
     eprintln!("   {summary}");
-    eprint!("   [Y]es / [N]o / [A]lways / [B]lock for {}: ", request.tool_name);
+    eprint!(
+        "   [Y]es / [N]o / [A]lways / [B]lock for {}: ",
+        request.tool_name
+    );
     let _ = io::stderr().flush();
 
     let stdin = io::stdin();

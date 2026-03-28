@@ -813,8 +813,7 @@ pub async fn send_approval_buttons(
     approval_id: &str,
     request: &crate::approval::ApprovalRequest,
 ) -> anyhow::Result<()> {
-    let client =
-        crate::config::build_channel_proxy_client("channel.discord.approval", proxy_url);
+    let client = crate::config::build_channel_proxy_client("channel.discord.approval", proxy_url);
     let summary = {
         let s = request.arguments.to_string();
         if s.len() > 300 {
@@ -855,9 +854,7 @@ pub async fn send_approval_buttons(
             ]
         }]
     });
-    let url = format!(
-        "https://discord.com/api/v10/channels/{discord_channel_id}/messages"
-    );
+    let url = format!("https://discord.com/api/v10/channels/{discord_channel_id}/messages");
     let resp = client
         .post(&url)
         .header("Authorization", format!("Bot {bot_token}"))
