@@ -104,6 +104,19 @@ pub trait Channel: Send + Sync {
         Ok(())
     }
 
+    /// Whether this channel supports button-based interactive approval prompts.
+    /// Channels that return `true` must also implement `pending_approvals()`.
+    fn supports_approval_buttons(&self) -> bool {
+        false
+    }
+
+    /// Shared pending-approvals map for channels that support button-based approval.
+    /// The approval manager writes into this map; the channel's `listen()` loop
+    /// reads from it when an interaction (button click) arrives.
+    fn pending_approvals(&self) -> Option<crate::approval::PendingApprovals> {
+        None
+    }
+
     /// Whether this channel supports progressive message updates via draft edits.
     fn supports_draft_updates(&self) -> bool {
         false
