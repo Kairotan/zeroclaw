@@ -3022,16 +3022,18 @@ pub(crate) async fn run_tool_call_loop(
                     // Non-interactive (channels): try button approval for
                     // channels that support it (e.g. Discord); other channels
                     // and timed-out prompts fall back to auto-deny.
-                    let decision = if mgr.is_non_interactive() {
-                        mgr.prompt_channel_async(
-                            &request,
-                            channel_name,
-                            channel_reply_target.unwrap_or(channel_name),
-                        )
-                        .await
-                        .unwrap_or(ApprovalResponse::No)
+                    let (decision, timed_out) = if mgr.is_non_interactive() {
+                        let resp = mgr
+                            .prompt_channel_async(
+                                &request,
+                                channel_name,
+                                channel_reply_target.unwrap_or(channel_name),
+                            )
+                            .await;
+                        let timed_out = resp.is_none();
+                        (resp.unwrap_or(ApprovalResponse::No), timed_out)
                     } else {
-                        mgr.prompt_cli(&request)
+                        (mgr.prompt_cli(&request), false)
                     };
 
                     mgr.record_decision(&tool_name, &tool_args, decision, channel_name);
@@ -3039,6 +3041,8 @@ pub(crate) async fn run_tool_call_loop(
                     if decision == ApprovalResponse::No || decision == ApprovalResponse::Block {
                         let denied = if decision == ApprovalResponse::Block {
                             format!("{tool_name} blocked for this session.")
+                        } else if timed_out {
+                            format!("Approval timed out — {tool_name} was not executed.")
                         } else {
                             "Denied by user.".to_string()
                         };
