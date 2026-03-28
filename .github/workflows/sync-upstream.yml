@@ -2,16 +2,17 @@ name: Sync with upstream
 
 on:
   schedule:
-    - cron: '0 6 * * *'   # daily at 06:00 UTC
+    - cron: '0 6 * * 1'   # weekly on Mondays at 06:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
   sync:
-    name: Rebase onto upstream/master
+    name: Merge upstream/master
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,39 +39,114 @@ jobs:
           echo "behind=$BEHIND" >> $GITHUB_OUTPUT
           echo "Upstream is $BEHIND commits ahead"
 
-      - name: Create sync branch and rebase
+      - name: Check for existing open sync PR
         if: steps.check.outputs.behind != '0'
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --state open --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("sync/upstream-"))] | first | .number // ""')
+          echo "pr=$EXISTING" >> $GITHUB_OUTPUT
+          if [ -n "$EXISTING" ]; then
+            echo "Found existing open sync PR #$EXISTING"
+          fi
+
+      - name: Comment on existing sync PR
+        if: steps.check.outputs.behind != '0' && steps.existing.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BEHIND=${{ steps.check.outputs.behind }}
+          gh pr comment ${{ steps.existing.outputs.pr }} \
+            --body "Weekly sync check: upstream is now **$BEHIND commits ahead** of master. Resolve this PR to catch up."
+          echo "Commented on existing PR #${{ steps.existing.outputs.pr }} — skipping new branch."
+
+      - name: Create sync branch and merge
+        if: steps.check.outputs.behind != '0' && steps.existing.outputs.pr == ''
+        id: merge
         run: |
           BRANCH="sync/upstream-$(date +%Y%m%d)"
           git checkout -b "$BRANCH"
-          git rebase upstream/master || {
-            echo "::error::Rebase conflict — manual resolution required"
-            git rebase --abort
-            exit 1
-          }
+          if git merge upstream/master --no-edit; then
+            echo "status=clean" >> $GITHUB_OUTPUT
+          else
+            CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            echo "status=conflict" >> $GITHUB_OUTPUT
+            echo "conflicts=$CONFLICTS" >> $GITHUB_OUTPUT
+            git merge --abort
+          fi
           git push origin "$BRANCH" --force-with-lease
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
-      - name: Open pull request
-        if: steps.check.outputs.behind != '0'
+      - name: Ensure sync label exists
+        if: steps.check.outputs.behind != '0' && steps.existing.outputs.pr == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh label create sync --color 0075ca --description "Upstream sync PR" --force
+
+      - name: Open clean sync PR
+        if: steps.merge.outputs.status == 'clean'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BEHIND=${{ steps.check.outputs.behind }}
           gh pr create \
             --title "chore: sync $BEHIND upstream commit(s) $(date +%Y-%m-%d)" \
+            --label sync \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --base master \
             --body "$(cat <<'EOF'
-          Automated daily sync from [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw).
+Automated weekly sync from [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw).
 
-          **Before merging:**
-          - Check that \`src/channels/discord.rs\` patch still applies cleanly
-          - Review any breaking changes in Cargo.toml / config schema
-          - The build workflow will run automatically on merge
+**Before merging, verify fork-owned files still apply cleanly:**
+- [ ] `src/channels/discord.rs` — image marker emission in `process_attachments()`
+- [ ] `src/channels/mod.rs` — approval wiring (largest file, highest conflict risk)
+- [ ] `src/approval/mod.rs` — net-new file, verify it still compiles
+- [ ] `src/agent/history.rs` — `trim_tool_message_content` tool_call_id preservation
+- [ ] `src/providers/openrouter.rs` — `clean_for_gemini` schema cleaning
 
-          EOF
-          )" \
-            --head "$BRANCH" \
-            --base master
+**Also check:**
+- [ ] Breaking changes in `Cargo.toml` / config schema
+- [ ] Run `cargo check` in WSL after merge before triggering a CI build
+
+EOF
+          )"
+
+      - name: Open draft conflict PR
+        if: steps.merge.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BEHIND=${{ steps.check.outputs.behind }}
+          CONFLICTS="${{ steps.merge.outputs.conflicts }}"
+          gh pr create \
+            --title "chore: sync $BEHIND upstream commit(s) $(date +%Y-%m-%d) [CONFLICT]" \
+            --label sync \
+            --draft \
+            --head "${{ steps.merge.outputs.branch }}" \
+            --base master \
+            --body "$(cat <<EOF
+Automated weekly sync from [zeroclaw-labs/zeroclaw](https://github.com/zeroclaw-labs/zeroclaw).
+
+> **Merge conflict detected.** This is a draft PR. Resolve conflicts on the \`${{ steps.merge.outputs.branch }}\` branch, then mark ready for review.
+
+**Conflicted files:**
+$(echo "$CONFLICTS" | tr ' ' '\n' | grep -v '^$' | sed 's/^/- /')
+
+**Fork-owned files to verify after resolution:**
+- [ ] \`src/channels/discord.rs\` — image marker emission in \`process_attachments()\`
+- [ ] \`src/channels/mod.rs\` — approval wiring (largest file, highest conflict risk)
+- [ ] \`src/approval/mod.rs\` — net-new file, verify it still compiles
+- [ ] \`src/agent/history.rs\` — \`trim_tool_message_content\` tool_call_id preservation
+- [ ] \`src/providers/openrouter.rs\` — \`clean_for_gemini\` schema cleaning
+
+**Also check:**
+- [ ] Breaking changes in \`Cargo.toml\` / config schema
+- [ ] Run \`cargo check\` in WSL after merge before triggering a CI build
+
+EOF
+          )"
 
       - name: No changes
         if: steps.check.outputs.behind == '0'

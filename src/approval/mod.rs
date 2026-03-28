@@ -8,10 +8,43 @@ use crate::security::AutonomyLevel;
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{self, BufRead, Write};
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::{Mutex as AsyncMutex, oneshot};
+use uuid::Uuid;
 
 // ── Types ────────────────────────────────────────────────────────
+
+/// Shared map of in-flight channel approval requests.
+/// Keyed by `approval_id` (UUID); value is a oneshot sender to deliver the response.
+pub type PendingApprovals = Arc<AsyncMutex<HashMap<String, oneshot::Sender<ApprovalResponse>>>>;
+
+/// Async function that sends an approval prompt (e.g. Discord buttons) to the user.
+/// Arguments: `approval_id`, `channel_id` (platform reply-target), `request`.
+/// Returns `Ok(())` once the message is sent; the response arrives via `PendingApprovals`.
+pub type PromptFn = Arc<
+    dyn Fn(
+            String,
+            String,
+            ApprovalRequest,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Configuration for channel-backed interactive approval (e.g. Discord buttons).
+pub struct ChannelApproval {
+    /// Channel name this bridge handles (e.g. `"discord"`).
+    /// Requests from any other channel immediately fall through to auto-deny
+    /// without making any API calls.
+    pub channel_name: String,
+    pub pending: PendingApprovals,
+    pub prompt_fn: PromptFn,
+    pub timeout_secs: u64,
+}
 
 /// A request to approve a tool call before execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,10 +59,12 @@ pub struct ApprovalRequest {
 pub enum ApprovalResponse {
     /// Execute this one call.
     Yes,
-    /// Deny this call.
+    /// Deny this one call.
     No,
     /// Execute and add tool to session-scoped allowlist.
     Always,
+    /// Deny and add tool to session-scoped denylist — never prompt again this session.
+    Block,
 }
 
 /// A single audit log entry for an approval decision.
@@ -68,8 +103,16 @@ pub struct ApprovalManager {
     non_interactive: bool,
     /// Session-scoped allowlist built from "Always" responses.
     session_allowlist: Mutex<HashSet<String>>,
+    /// Session-scoped denylist built from "Block" responses.
+    /// Keyed by channel name; each value is the set of blocked tool names.
+    /// A block in Discord does not affect Slack, CLI, or any other channel.
+    session_denylist: Mutex<HashMap<String, HashSet<String>>>,
     /// Audit trail of approval decisions.
     audit_log: Mutex<Vec<ApprovalLogEntry>>,
+    /// Optional channel-backed interactive approval (e.g. Discord buttons).
+    /// Only activates when the incoming message's channel name matches
+    /// `ChannelApproval::channel_name`; all other channels auto-deny as before.
+    channel_approval: Option<ChannelApproval>,
 }
 
 impl ApprovalManager {
@@ -81,7 +124,9 @@ impl ApprovalManager {
             autonomy_level: config.level,
             non_interactive: false,
             session_allowlist: Mutex::new(HashSet::new()),
+            session_denylist: Mutex::new(HashMap::new()),
             audit_log: Mutex::new(Vec::new()),
+            channel_approval: None,
         }
     }
 
@@ -97,7 +142,23 @@ impl ApprovalManager {
             autonomy_level: config.level,
             non_interactive: true,
             session_allowlist: Mutex::new(HashSet::new()),
+            session_denylist: Mutex::new(HashMap::new()),
             audit_log: Mutex::new(Vec::new()),
+            channel_approval: None,
+        }
+    }
+
+    /// Create a non-interactive approval manager that can prompt the user via
+    /// a specific channel (e.g. Discord buttons) when a message from that
+    /// channel requires approval.  Messages from any other channel still
+    /// auto-deny — no API calls are made for them.
+    pub fn with_channel_approval(
+        config: &AutonomyConfig,
+        channel_approval: ChannelApproval,
+    ) -> Self {
+        Self {
+            channel_approval: Some(channel_approval),
+            ..Self::for_non_interactive(config)
         }
     }
 
@@ -105,6 +166,15 @@ impl ApprovalManager {
     /// (i.e. for channel-driven runs where no operator can approve).
     pub fn is_non_interactive(&self) -> bool {
         self.non_interactive
+    }
+
+    /// Returns `true` if the tool has been session-blocked in the given channel.
+    /// Blocks are channel-scoped: blocking `bash` in Discord does not affect Slack or CLI.
+    pub fn is_session_blocked(&self, channel: &str, tool_name: &str) -> bool {
+        let denylist = self.session_denylist.lock();
+        denylist
+            .get(channel)
+            .map_or(false, |tools| tools.contains(tool_name))
     }
 
     /// Check whether a tool call requires interactive approval.
@@ -163,6 +233,14 @@ impl ApprovalManager {
             let mut allowlist = self.session_allowlist.lock();
             allowlist.insert(tool_name.to_string());
         }
+        // If "Block", add to the per-channel denylist.
+        if decision == ApprovalResponse::Block {
+            let mut denylist = self.session_denylist.lock();
+            denylist
+                .entry(channel.to_string())
+                .or_default()
+                .insert(tool_name.to_string());
+        }
 
         // Append to audit log.
         let summary = summarize_args(args);
@@ -194,6 +272,47 @@ impl ApprovalManager {
     pub fn prompt_cli(&self, request: &ApprovalRequest) -> ApprovalResponse {
         prompt_cli_interactive(request)
     }
+
+    /// Attempt to prompt the user via a channel interaction (e.g. Discord buttons).
+    ///
+    /// Returns `Some(response)` if the user clicked a button before the timeout.
+    /// Returns `None` if:
+    /// - no channel bridge is configured,
+    /// - `channel_name` does not match the bridge's target channel (other channels
+    ///   auto-deny without making any API calls),
+    /// - the prompt message failed to send, or
+    /// - the user did not respond within `timeout_secs`.
+    pub async fn prompt_channel_async(
+        &self,
+        request: &ApprovalRequest,
+        channel_name: &str,
+        channel_id: &str,
+    ) -> Option<ApprovalResponse> {
+        let ca = self.channel_approval.as_ref()?;
+        // Only handle the channel this bridge was configured for.
+        if ca.channel_name != channel_name {
+            return None;
+        }
+        let approval_id = Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        ca.pending.lock().await.insert(approval_id.clone(), tx);
+        if let Err(e) =
+            (ca.prompt_fn)(approval_id.clone(), channel_id.to_string(), request.clone()).await
+        {
+            tracing::warn!("Approval button prompt failed: {e}");
+            ca.pending.lock().await.remove(&approval_id);
+            return None;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(ca.timeout_secs), rx).await {
+            Ok(Ok(response)) => Some(response),
+            Ok(Err(_)) => None, // sender dropped
+            Err(_) => {
+                tracing::debug!("Approval timed out for {approval_id}");
+                ca.pending.lock().await.remove(&approval_id);
+                None
+            }
+        }
+    }
 }
 
 // ── CLI prompt ───────────────────────────────────────────────────
@@ -204,7 +323,10 @@ fn prompt_cli_interactive(request: &ApprovalRequest) -> ApprovalResponse {
     eprintln!();
     eprintln!("🔧 Agent wants to execute: {}", request.tool_name);
     eprintln!("   {summary}");
-    eprint!("   [Y]es / [N]o / [A]lways for {}: ", request.tool_name);
+    eprint!(
+        "   [Y]es / [N]o / [A]lways / [B]lock for {}: ",
+        request.tool_name
+    );
     let _ = io::stderr().flush();
 
     let stdin = io::stdin();
@@ -216,6 +338,7 @@ fn prompt_cli_interactive(request: &ApprovalRequest) -> ApprovalResponse {
     match line.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => ApprovalResponse::Yes,
         "a" | "always" => ApprovalResponse::Always,
+        "b" | "block" => ApprovalResponse::Block,
         _ => ApprovalResponse::No,
     }
 }

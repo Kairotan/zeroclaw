@@ -44,7 +44,7 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 pub(crate) use super::history::{
     emergency_history_trim, estimate_history_tokens, fast_trim_tool_results,
     load_interactive_session_history, save_interactive_session_history, trim_history,
-    truncate_tool_result,
+    trim_tool_message_content, truncate_tool_result,
 };
 
 /// Minimum user-message length (in chars) for auto-save to memory.
@@ -2988,6 +2988,30 @@ pub(crate) async fn run_tool_call_loop(
 
             // ── Approval hook ────────────────────────────────
             if let Some(mgr) = approval {
+                // Session-blocked tools are denied immediately without prompting.
+                if mgr.is_session_blocked(channel_name, &tool_name) {
+                    let denied = format!("{tool_name} is blocked for this session.");
+                    if let Some(ref tx) = on_delta {
+                        let _ = tx
+                            .send(DraftEvent::Progress(format!(
+                                "\u{274c} {}: {}\n",
+                                tool_name, denied
+                            )))
+                            .await;
+                    }
+                    ordered_results[idx] = Some((
+                        tool_name.clone(),
+                        call.tool_call_id.clone(),
+                        ToolExecutionOutcome {
+                            output: denied.clone(),
+                            success: false,
+                            error_reason: Some(denied),
+                            duration: Duration::ZERO,
+                        },
+                    ));
+                    continue;
+                }
+
                 if mgr.needs_approval(&tool_name) {
                     let request = ApprovalRequest {
                         tool_name: tool_name.clone(),
@@ -2995,18 +3019,29 @@ pub(crate) async fn run_tool_call_loop(
                     };
 
                     // Interactive CLI: prompt the operator.
-                    // Non-interactive (channels): auto-deny since no operator
-                    // is present to approve.
+                    // Non-interactive (channels): try button approval for
+                    // channels that support it (e.g. Discord); other channels
+                    // and timed-out prompts fall back to auto-deny.
                     let decision = if mgr.is_non_interactive() {
-                        ApprovalResponse::No
+                        mgr.prompt_channel_async(
+                            &request,
+                            channel_name,
+                            channel_reply_target.unwrap_or(channel_name),
+                        )
+                        .await
+                        .unwrap_or(ApprovalResponse::No)
                     } else {
                         mgr.prompt_cli(&request)
                     };
 
                     mgr.record_decision(&tool_name, &tool_args, decision, channel_name);
 
-                    if decision == ApprovalResponse::No {
-                        let denied = "Denied by user.".to_string();
+                    if decision == ApprovalResponse::No || decision == ApprovalResponse::Block {
+                        let denied = if decision == ApprovalResponse::Block {
+                            format!("{tool_name} blocked for this session.")
+                        } else {
+                            "Denied by user.".to_string()
+                        };
                         runtime_trace::record_event(
                             "tool_call_result",
                             Some(channel_name),
