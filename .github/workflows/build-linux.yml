@@ -34,23 +34,16 @@ jobs:
     name: Build zeroclaw (aarch64 / AL2023)
     needs: [web]
     runs-on: ubuntu-24.04-arm
-    container: amazonlinux:2023
+    container: ghcr.io/kairotan/zeroclaw-builder:latest
     timeout-minutes: 40
     steps:
-      - name: Install prerequisites
-        run: dnf install -y tar git
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
           path: web/dist/
-      - name: Install build dependencies
-        run: |
-          dnf install -y gcc
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.93.0
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Add cargo to PATH
+        run: echo "/root/.cargo/bin" >> $GITHUB_PATH
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
         run: |

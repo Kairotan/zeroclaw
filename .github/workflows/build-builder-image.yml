@@ -1,0 +1,32 @@
+name: Build Builder Image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build and push aarch64 builder image
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/builder-aarch64.Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/zeroclaw-builder:latest
+            ghcr.io/${{ github.repository_owner }}/zeroclaw-builder:rust-1.93.0
