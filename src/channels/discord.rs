@@ -2397,7 +2397,7 @@ mod tests {
     #[tokio::test]
     async fn process_attachments_empty_list_returns_empty() {
         let client = reqwest::Client::new();
-        let result = process_attachments(&[], &client).await;
+        let result = process_attachments(&[], &client, None).await;
         assert!(result.is_empty());
     }
 
@@ -2409,7 +2409,7 @@ mod tests {
             "filename": "doc.pdf",
             "content_type": "application/pdf"
         })];
-        let result = process_attachments(&attachments, &client).await;
+        let result = process_attachments(&attachments, &client, None).await;
         assert!(result.is_empty());
     }
 
