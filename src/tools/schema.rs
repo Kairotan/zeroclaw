@@ -421,6 +421,10 @@ impl SchemaCleanr {
             if let Some(typed) = Self::try_same_primitive_type_union(&non_null, obj) {
                 return Some(typed);
             }
+            // string | array<string> → coerce to array<string>
+            if let Some(collapsed) = Self::try_flatten_string_or_array_union(&non_null, obj) {
+                return Some(collapsed);
+            }
             // Heterogeneous union → best-effort property union or richest variant
             return Some(Self::gemini_union_fallback(&non_null, obj));
         }
@@ -827,6 +831,51 @@ impl SchemaCleanr {
         };
 
         Some(Self::preserve_meta(source, result))
+    }
+
+    /// Collapses `anyOf: [{type:"string"}, {type:"array", items:{type:"string"}}]`
+    /// into the array variant.
+    ///
+    /// Coercing to array is the safer direction for LLMs: a single value becomes
+    /// `["val"]` which backends handle trivially, and multiple values have an
+    /// unambiguous representation. Coercing to string would force the LLM to
+    /// invent comma-separated hacks for multi-value cases.
+    ///
+    /// Returns `None` if the variants are not exactly this pattern (e.g. the
+    /// array items are not strings, or there is a third variant type).
+    fn try_flatten_string_or_array_union(
+        variants: &[Value],
+        source: &Map<String, Value>,
+    ) -> Option<Value> {
+        let mut has_string = false;
+        let mut array_variant: Option<Value> = None;
+
+        for variant in variants {
+            let obj = variant.as_object()?;
+            match obj.get("type").and_then(|t| t.as_str()) {
+                Some("string") => {
+                    has_string = true;
+                }
+                Some("array") => {
+                    let items_type = obj
+                        .get("items")
+                        .and_then(|i| i.get("type"))
+                        .and_then(|t| t.as_str());
+                    if items_type == Some("string") {
+                        array_variant = Some(variant.clone());
+                    } else {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+
+        if has_string {
+            array_variant.map(|v| Self::preserve_meta(source, v))
+        } else {
+            None
+        }
     }
 
     /// Merge an `allOf` schema into a single flat schema.
@@ -2011,5 +2060,59 @@ mod tests {
 
         assert_eq!(cleaned["not"]["type"], "integer");
         assert!(cleaned["not"].get("minimum").is_none());
+    }
+
+    // ── string | array<string> coercion ─────────────────────────────────────
+
+    #[test]
+    fn test_string_or_array_union_collapses_to_array_for_gemini() {
+        let schema = json!({
+            "description": "Tags",
+            "anyOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["type"], "array");
+        assert_eq!(cleaned["items"]["type"], "string");
+        assert!(cleaned.get("anyOf").is_none());
+        assert_eq!(cleaned["description"], "Tags");
+    }
+
+    #[test]
+    fn test_string_or_array_union_kept_for_openai() {
+        let schema = json!({
+            "anyOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" } }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_openai(schema);
+        assert!(cleaned.get("anyOf").is_some());
+    }
+
+    #[test]
+    fn test_string_or_non_string_array_not_collapsed() {
+        // array<integer> + string must NOT be handled by try_flatten_string_or_array_union —
+        // falls through to gemini_union_fallback instead. The fallback picks the richest
+        // variant (array<integer>, 2 keys > 1), so items.type ends up "integer".
+        // Verify anyOf is gone (fallback ran) and items were NOT coerced to string
+        // (our handler, which produces array<string>, did not fire).
+        let schema = json!({
+            "anyOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "integer" } }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert!(cleaned.get("anyOf").is_none());
+        assert_ne!(
+            cleaned
+                .get("items")
+                .and_then(|i| i.get("type"))
+                .and_then(|t| t.as_str()),
+            Some("string")
+        );
     }
 }
