@@ -918,14 +918,75 @@ impl SchemaCleanr {
             return Some(Self::preserve_meta(obj, Value::Object(result)));
         }
 
-        // Heterogeneous allOf — key-level merge, first definition wins on collision.
-        // Handles the common add-constraint pattern: allOf: [{type:"T"}, {enum:[...]}]
-        // and also preserves description/title/default from description-only variants.
+        // Heterogeneous allOf — per-key merge strategy:
+        //   Metadata (description, title, default): last-wins — constraint variants
+        //     provide more specific context and should override the base.
+        //   Constraints (enum, const): last-wins — the extension restricts the base.
+        //   Structure (type, format, $schema, items, properties): first-wins — the
+        //     base schema is the authoritative structural definition.
+        //   required: union — every field marked required by any variant must be required.
+        //   Everything else: first-wins for stability.
         let mut merged: Map<String, Value> = Map::new();
         for variant in &effective {
             if let Some(variant_obj) = variant.as_object() {
                 for (k, v) in variant_obj {
-                    merged.entry(k.clone()).or_insert_with(|| v.clone());
+                    match k.as_str() {
+                        // Metadata: last-wins
+                        "description" | "title" | "default" => {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                        // Constraints: last-wins
+                        "enum" | "const" => {
+                            if k == "enum" {
+                                if let Some(existing_enum) = merged.get("enum") {
+                                    if existing_enum != v {
+                                        // Note: {:?} formatting could print control characters,
+                                        // but schema inputs are developer-controlled, not user input.
+                                        tracing::warn!(
+                                            "allOf merge: conflicting enum constraints — \
+                                             overwriting {:?} with {:?}. \
+                                             Intersection was not performed; \
+                                             this may indicate an impossible constraint \
+                                             in the source schema.",
+                                            existing_enum,
+                                            v
+                                        );
+                                    }
+                                }
+                            }
+                            merged.insert(k.clone(), v.clone());
+                        }
+                        // Required: union — collect all required fields from every variant.
+                        // O(N) contains check is acceptable; required arrays are small.
+                        // Inputs are trusted so unbounded growth is not a practical concern.
+                        "required" => {
+                            if let Value::Array(new_req) = v {
+                                match merged.entry(k.clone()) {
+                                    serde_json::map::Entry::Occupied(mut occ) => {
+                                        if let Value::Array(existing) = occ.get_mut() {
+                                            for item in new_req {
+                                                if !existing.contains(item) {
+                                                    existing.push(item.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    serde_json::map::Entry::Vacant(vac) => {
+                                        vac.insert(Value::Array(new_req.clone()));
+                                    }
+                                }
+                            }
+                        }
+                        // Structure and identity: first-wins — base is authoritative.
+                        // Explicitly listed for intent clarity, not functional necessity.
+                        "$schema" | "type" | "format" | "items" | "properties" => {
+                            merged.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                        // Fallback: first-wins for stability.
+                        _ => {
+                            merged.entry(k.clone()).or_insert_with(|| v.clone());
+                        }
+                    }
                 }
             }
         }
@@ -940,6 +1001,13 @@ impl SchemaCleanr {
     /// 3. Fall back to the richest variant (most top-level keys) when the
     ///    variants are too heterogeneous to merge cleanly.
     fn gemini_union_fallback(variants: &[Value], source: &Map<String, Value>) -> Value {
+        tracing::warn!(
+            "schema cleaner: heterogeneous union could not be cleanly flattened; \
+             falling back to lossy merge — strict type constraints will be dropped. \
+             Variants: {:?}",
+            variants
+        );
+
         // Collect merged properties from all object-bearing variants
         let mut merged_props: Map<String, Value> = Map::new();
         let mut common_type: Option<String> = None;
@@ -1826,6 +1894,80 @@ mod tests {
         let req = cleaned["required"].as_array().unwrap();
         assert!(req.contains(&json!("id")));
         assert!(req.contains(&json!("extra")));
+    }
+
+    // ── Heterogeneous allOf merge strategy ──────────────────────────────────
+
+    #[test]
+    fn test_allof_description_last_wins() {
+        // Constraint variant description should override base description
+        let schema = json!({
+            "allOf": [
+                { "type": "string", "description": "A name" },
+                { "description": "Only when kind is X" }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["type"], "string");
+        assert_eq!(cleaned["description"], "Only when kind is X");
+        assert!(cleaned.get("allOf").is_none());
+    }
+
+    #[test]
+    fn test_allof_required_union_heterogeneous() {
+        // required arrays from all variants should be unioned
+        let schema = json!({
+            "allOf": [
+                { "type": "string", "required": ["id"] },
+                { "required": ["timestamp"] }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        let req = cleaned["required"].as_array().unwrap();
+        assert!(req.contains(&json!("id")));
+        assert!(req.contains(&json!("timestamp")));
+    }
+
+    #[test]
+    fn test_allof_type_first_wins() {
+        // type from base (first) variant should not be overridden by constraint
+        let schema = json!({
+            "allOf": [
+                { "type": "string" },
+                { "type": "integer" }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["type"], "string");
+    }
+
+    #[test]
+    fn test_allof_enum_last_wins() {
+        // enum from constraint variant should override base
+        let schema = json!({
+            "allOf": [
+                { "type": "string" },
+                { "enum": ["a", "b", "c"] }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["enum"], json!(["a", "b", "c"]));
+    }
+
+    #[test]
+    fn test_allof_outer_description_beats_variant_description() {
+        // preserve_meta runs after the variant merge and unconditionally overwrites,
+        // so a description on the allOf wrapper itself always wins over variant descriptions.
+        let schema = json!({
+            "description": "outer description",
+            "allOf": [
+                { "type": "string", "description": "base description" },
+                { "description": "constraint description" }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["type"], "string");
+        assert_eq!(cleaned["description"], "outer description");
     }
 
     // ── Fix 3: both anyOf and oneOf present ──────────────────────────────────
