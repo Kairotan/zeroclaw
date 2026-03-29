@@ -5537,6 +5537,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
     // Hydrate in-memory conversation histories from persisted JSONL session files.
     // If the last persisted turn is a user message (orphan from a crash mid-query),
     // close it with a marker so the LLM doesn't try to continue the old request.
+    // For sessions belonging to currently-active channels, also strip any trailing
+    // assistant tool-call with no following tool result (orphan from a crash between
+    // tool dispatch and result append) — strict providers like Gemini reject such history.
     if let Some(ref store) = runtime_ctx.session_store {
         let mut hydrated = 0usize;
         let mut orphans_closed = 0usize;
@@ -5558,6 +5561,28 @@ pub async fn start_channels(config: Config) -> Result<()> {
                 }
                 msgs.push(closure);
                 orphans_closed += 1;
+            } else {
+                // Strip trailing orphaned tool calls only for sessions that belong to a
+                // currently-active channel. Sessions from channels no longer configured
+                // are restored as-is to avoid silent data loss.
+                let channel_name = key.split('_').next().unwrap_or("");
+                let is_active_channel = runtime_ctx.channels_by_name.contains_key(channel_name);
+                if is_active_channel
+                    && msgs
+                        .last()
+                        .is_some_and(|m| m.role == "assistant" && is_tool_call_content(&m.content))
+                {
+                    // Orphaned tool call — the session was interrupted after the LLM issued
+                    // a tool call but before the result was appended. Strip it so the history
+                    // doesn't start with a dangling tool call that strict providers reject.
+                    msgs.pop();
+                    if let Err(e) = store.remove_last(&key) {
+                        tracing::debug!(
+                            "Failed to persist orphan tool-call removal for {key}: {e}"
+                        );
+                    }
+                    orphans_closed += 1;
+                }
             }
             hydrated += 1;
             histories.insert(key, msgs);
