@@ -940,12 +940,14 @@ impl SchemaCleanr {
                             if k == "enum" {
                                 if let Some(existing_enum) = merged.get("enum") {
                                     if existing_enum != v {
-                                        // Downgraded to debug to prevent log spam in hot paths.
                                         // Note: {:?} formatting could print control characters,
-                                        // but schema inputs are trusted developer-controlled data.
-                                        tracing::debug!(
-                                            "allOf merge: overwriting base enum {:?} with \
-                                             constraint enum {:?}. Intersection was not performed.",
+                                        // but schema inputs are developer-controlled, not user input.
+                                        tracing::warn!(
+                                            "allOf merge: conflicting enum constraints — \
+                                             overwriting {:?} with {:?}. \
+                                             Intersection was not performed; \
+                                             this may indicate an impossible constraint \
+                                             in the source schema.",
                                             existing_enum,
                                             v
                                         );
@@ -999,6 +1001,13 @@ impl SchemaCleanr {
     /// 3. Fall back to the richest variant (most top-level keys) when the
     ///    variants are too heterogeneous to merge cleanly.
     fn gemini_union_fallback(variants: &[Value], source: &Map<String, Value>) -> Value {
+        tracing::warn!(
+            "schema cleaner: heterogeneous union could not be cleanly flattened; \
+             falling back to lossy merge — strict type constraints will be dropped. \
+             Variants: {:?}",
+            variants
+        );
+
         // Collect merged properties from all object-bearing variants
         let mut merged_props: Map<String, Value> = Map::new();
         let mut common_type: Option<String> = None;
@@ -1943,6 +1952,22 @@ mod tests {
         });
         let cleaned = SchemaCleanr::clean_for_gemini(schema);
         assert_eq!(cleaned["enum"], json!(["a", "b", "c"]));
+    }
+
+    #[test]
+    fn test_allof_outer_description_beats_variant_description() {
+        // preserve_meta runs after the variant merge and unconditionally overwrites,
+        // so a description on the allOf wrapper itself always wins over variant descriptions.
+        let schema = json!({
+            "description": "outer description",
+            "allOf": [
+                { "type": "string", "description": "base description" },
+                { "description": "constraint description" }
+            ]
+        });
+        let cleaned = SchemaCleanr::clean_for_gemini(schema);
+        assert_eq!(cleaned["type"], "string");
+        assert_eq!(cleaned["description"], "outer description");
     }
 
     // ── Fix 3: both anyOf and oneOf present ──────────────────────────────────
