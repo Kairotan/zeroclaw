@@ -106,7 +106,7 @@ impl CleaningStrategy {
     pub fn unsupported_keywords(self) -> &'static [&'static str] {
         match self {
             Self::Gemini | Self::Anthropic => GEMINI_UNSUPPORTED_KEYWORDS,
-            Self::OpenAI => &[],                                  // OpenAI is most permissive
+            Self::OpenAI => &[], // OpenAI is most permissive
             Self::Conservative => &["$ref", "$defs", "definitions", "additionalProperties"],
         }
     }
@@ -534,7 +534,10 @@ impl SchemaCleanr {
     ///  properties:{kind:{type:"string",enum:["ssn","pass"]}, num:{…}, id:{…}},
     ///  required:["kind"]}
     /// ```
-    fn try_merge_discriminated_variants(variants: &[Value], source: &Map<String, Value>) -> Option<Value> {
+    fn try_merge_discriminated_variants(
+        variants: &[Value],
+        source: &Map<String, Value>,
+    ) -> Option<Value> {
         if variants.is_empty() {
             return None;
         }
@@ -622,12 +625,10 @@ impl SchemaCleanr {
                         .unwrap_or_default()
                 })
                 .collect();
-            per_variant
-                .iter()
-                .skip(1)
-                .fold(per_variant.first().cloned().unwrap_or_default(), |acc, s| {
-                    acc.intersection(s).cloned().collect()
-                })
+            per_variant.iter().skip(1).fold(
+                per_variant.first().cloned().unwrap_or_default(),
+                |acc, s| acc.intersection(s).cloned().collect(),
+            )
         };
 
         // Discriminator fields are always required (model must specify which branch)
@@ -666,7 +667,9 @@ impl SchemaCleanr {
             disc_schema.remove("const"); // already absorbed into enum
             disc_schema.insert("enum".to_string(), Value::Array(values.clone()));
             // Ensure type is present; default to "string" (discriminators almost always are)
-            disc_schema.entry("type".to_string()).or_insert_with(|| json!("string"));
+            disc_schema
+                .entry("type".to_string())
+                .or_insert_with(|| json!("string"));
             merged_props.insert(key.clone(), Value::Object(disc_schema));
         }
 
@@ -727,12 +730,13 @@ impl SchemaCleanr {
 
                 // Only inject when the property is exclusive to a subset of variants
                 if matching_disc_vals.len() < variants.len() && !matching_disc_vals.is_empty() {
-                    let condition =
-                        format!("Only when {} is {}.", disc_key, matching_disc_vals.join(" or "));
+                    let condition = format!(
+                        "Only when {} is {}.",
+                        disc_key,
+                        matching_disc_vals.join(" or ")
+                    );
 
-                    if let Some(Value::Object(schema_obj)) =
-                        merged_props.get_mut(&prop_key)
-                    {
+                    if let Some(Value::Object(schema_obj)) = merged_props.get_mut(&prop_key) {
                         let existing = schema_obj
                             .get("description")
                             .and_then(|d| d.as_str())
@@ -743,8 +747,7 @@ impl SchemaCleanr {
                         } else {
                             format!("{} {}", condition, existing)
                         };
-                        schema_obj
-                            .insert("description".to_string(), Value::String(new_desc));
+                        schema_obj.insert("description".to_string(), Value::String(new_desc));
                     }
                 }
             }
@@ -979,7 +982,10 @@ impl SchemaCleanr {
                         .iter()
                         .find_map(|v| v.as_object().and_then(|o| o.get("items")).cloned());
                     if let Some(items) = first_items {
-                        return Self::preserve_meta(source, json!({ "type": "array", "items": items }));
+                        return Self::preserve_meta(
+                            source,
+                            json!({ "type": "array", "items": items }),
+                        );
                     }
                 }
                 return Self::preserve_meta(source, json!({ "type": t }));
@@ -1485,14 +1491,24 @@ mod tests {
 
         // Discriminator: unchanged (already enum, no condition added to it)
         let kind = &cleaned["properties"]["kind"];
-        assert!(kind.get("description").is_none() || !kind["description"].as_str().unwrap_or("").contains("Only when"));
+        assert!(
+            kind.get("description").is_none()
+                || !kind["description"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Only when")
+        );
 
         // Branch-exclusive properties get conditional prefix
-        let number_desc = cleaned["properties"]["number"]["description"].as_str().unwrap();
+        let number_desc = cleaned["properties"]["number"]["description"]
+            .as_str()
+            .unwrap();
         assert!(number_desc.starts_with("Only when kind is \"ssn\"."));
         assert!(number_desc.contains("The SSN value.")); // original preserved
 
-        let country_desc = cleaned["properties"]["country"]["description"].as_str().unwrap();
+        let country_desc = cleaned["properties"]["country"]["description"]
+            .as_str()
+            .unwrap();
         assert!(country_desc.starts_with("Only when kind is \"passport\"."));
 
         let id_desc = cleaned["properties"]["id"]["description"].as_str().unwrap();

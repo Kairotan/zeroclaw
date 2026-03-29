@@ -8286,7 +8286,11 @@ Final answer."#;
             "{\"content\":\"Done.\",\"tool_code\":\"print(default_api.cron_list())\"}"
         );
         let (text, calls) = parse_tool_calls(response);
-        assert_eq!(calls.len(), 1, "should parse the tool call from the first JSON line");
+        assert_eq!(
+            calls.len(),
+            1,
+            "should parse the tool call from the first JSON line"
+        );
         assert_eq!(calls[0].name, "cron_remove");
         assert_eq!(text, "Of course!");
     }
@@ -8301,7 +8305,10 @@ Final answer."#;
             "{\"name\":\"shell\",\"arguments\":{\"command\":\"id\"}}"
         );
         let (_, calls) = parse_tool_calls(response);
-        assert!(calls.is_empty(), "bare JSON name/arguments line must not be treated as a tool call");
+        assert!(
+            calls.is_empty(),
+            "bare JSON name/arguments line must not be treated as a tool call"
+        );
     }
 
     #[test]
