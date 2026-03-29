@@ -21,6 +21,13 @@ pub struct DiscordChannel {
     /// Shared pending-approval map — written by the approval manager, read by
     /// the WebSocket listener when an INTERACTION_CREATE (button click) arrives.
     pending_approvals: crate::approval::PendingApprovals,
+    /// Optional workspace directory for saving downloaded image/video attachments.
+    ///
+    /// When set, `image/*` and `video/*` attachments are downloaded to
+    /// `<workspace_dir>/discord_files/` and forwarded to the agent as
+    /// `[IMAGE:path]` / `[VIDEO:path]` markers.
+    /// When unset, the CDN URL is used directly as the marker source.
+    workspace_dir: Option<PathBuf>,
     /// Per-channel proxy URL override.
     proxy_url: Option<String>,
     /// Voice transcription config — when set, audio attachments are
@@ -57,6 +64,7 @@ impl DiscordChannel {
             mention_only,
             typing_handles: Mutex::new(HashMap::new()),
             pending_approvals: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            workspace_dir: None,
             proxy_url: None,
             transcription: None,
             transcription_manager: None,
@@ -67,6 +75,16 @@ impl DiscordChannel {
             multi_message_sent_len: Mutex::new(HashMap::new()),
             multi_message_thread_ts: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Attach a workspace directory for saving downloaded image/video attachments.
+    ///
+    /// Images and videos sent to Discord will be saved under
+    /// `<dir>/discord_files/` and forwarded to the agent as
+    /// `[IMAGE:path]` / `[VIDEO:path]` markers.
+    pub fn with_workspace_dir(mut self, dir: PathBuf) -> Self {
+        self.workspace_dir = Some(dir);
+        self
     }
 
     /// Set a per-channel proxy URL that overrides the global proxy config.
@@ -128,11 +146,16 @@ impl DiscordChannel {
 /// Process Discord message attachments and return a string to append to the
 /// agent message context.
 ///
-/// Only `text/*` MIME types are fetched and inlined. All other types are
-/// silently skipped. Fetch errors are logged as warnings.
+/// `text/*` attachments are fetched and inlined as text.
+/// `image/*` and `video/*` attachments are either downloaded to
+/// `<workspace_dir>/discord_files/` (when a directory is provided) and
+/// represented as `[IMAGE:path]` / `[VIDEO:path]` markers, or forwarded
+/// as `[IMAGE:url]` / `[VIDEO:url]` when no workspace directory is set.
+/// All other types are silently skipped.
 async fn process_attachments(
     attachments: &[serde_json::Value],
     client: &reqwest::Client,
+    workspace_dir: Option<&Path>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     for att in attachments {
@@ -148,6 +171,7 @@ async fn process_attachments(
             tracing::warn!(name, "discord: attachment has no url, skipping");
             continue;
         };
+
         if ct.starts_with("text/") {
             match client.get(url).send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -162,11 +186,19 @@ async fn process_attachments(
                     tracing::warn!(name, error = %e, "discord attachment fetch error");
                 }
             }
-        } else if ct.starts_with("image/") {
-            // Emit an [IMAGE:url] marker so the multimodal pipeline can fetch
-            // and pass the image to vision-capable providers (e.g. Gemini).
-            tracing::debug!(name, content_type = ct, "discord: emitting image marker");
-            parts.push(format!("[IMAGE:{url}]"));
+        } else if ct.starts_with("image/") || ct.starts_with("video/") {
+            let marker_kind = if ct.starts_with("image/") {
+                "IMAGE"
+            } else {
+                "VIDEO"
+            };
+            let source = if let Some(dir) = workspace_dir {
+                download_discord_attachment(client, url, name, dir).await
+            } else {
+                None
+            };
+            let marker_target = source.as_deref().unwrap_or(url);
+            parts.push(format!("[{marker_kind}:{marker_target}]"));
         } else {
             tracing::debug!(
                 name,
@@ -176,6 +208,57 @@ async fn process_attachments(
         }
     }
     parts.join("\n---\n")
+}
+
+/// Download a Discord CDN attachment to `<dir>/discord_files/<filename>`.
+/// Returns the local path as a string on success, or `None` on failure.
+async fn download_discord_attachment(
+    client: &reqwest::Client,
+    url: &str,
+    filename: &str,
+    workspace_dir: &Path,
+) -> Option<String> {
+    let save_dir = workspace_dir.join("discord_files");
+    if let Err(e) = tokio::fs::create_dir_all(&save_dir).await {
+        tracing::warn!("discord: failed to create discord_files dir: {e}");
+        return None;
+    }
+
+    match client.get(url).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+            Ok(bytes) => {
+                // Sanitise the filename: keep only the last path component and
+                // strip any leading dots to prevent directory traversal.
+                let safe_name = std::path::Path::new(filename)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("attachment")
+                    .trim_start_matches('.');
+                let dest = save_dir.join(safe_name);
+                if let Err(e) = tokio::fs::write(&dest, &bytes).await {
+                    tracing::warn!(filename, "discord: failed to save attachment: {e}");
+                    return None;
+                }
+                dest.to_str().map(str::to_string)
+            }
+            Err(e) => {
+                tracing::warn!(filename, "discord: failed to read attachment bytes: {e}");
+                None
+            }
+        },
+        Ok(resp) => {
+            tracing::warn!(
+                filename,
+                status = %resp.status(),
+                "discord: attachment download failed"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(filename, "discord: attachment download error: {e}");
+            None
+        }
+    }
 }
 
 /// Audio file extensions accepted for voice transcription.
@@ -1227,7 +1310,9 @@ impl Channel for DiscordChannel {
                             .cloned()
                             .unwrap_or_default();
                         let client = self.http_client();
-                        let mut text_parts = process_attachments(&atts, &client).await;
+                        let mut text_parts =
+                            process_attachments(&atts, &client, self.workspace_dir.as_deref())
+                                .await;
 
                         // Transcribe audio attachments when transcription is configured
                         if let Some(ref transcription_manager) = self.transcription_manager {
@@ -2312,7 +2397,7 @@ mod tests {
     #[tokio::test]
     async fn process_attachments_empty_list_returns_empty() {
         let client = reqwest::Client::new();
-        let result = process_attachments(&[], &client).await;
+        let result = process_attachments(&[], &client, None).await;
         assert!(result.is_empty());
     }
 
@@ -2324,7 +2409,7 @@ mod tests {
             "filename": "doc.pdf",
             "content_type": "application/pdf"
         })];
-        let result = process_attachments(&attachments, &client).await;
+        let result = process_attachments(&attachments, &client, None).await;
         assert!(result.is_empty());
     }
 
