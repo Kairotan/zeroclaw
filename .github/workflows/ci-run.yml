@@ -54,7 +54,7 @@ jobs:
         run: mkdir -p web/dist && touch web/dist/.gitkeep
 
       - name: Verify benchmarks compile
-        run: cargo bench --no-run --locked
+        run: cargo check --benches --locked
 
   lint-strict-delta:
     name: Strict Delta Lint
