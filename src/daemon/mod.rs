@@ -329,6 +329,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 false,
                 None,
                 None,
+                None,
             ))
             .await
             {
@@ -416,6 +417,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                 temp,
                 vec![],
                 false,
+                None,
                 None,
                 None,
             ))

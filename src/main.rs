@@ -1027,6 +1027,7 @@ async fn main() -> Result<()> {
                 true,
                 session_state_file,
                 None,
+                None,
             ))
             .await
             .map(|_| ())

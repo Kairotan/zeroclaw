@@ -282,6 +282,12 @@ async fn run_agent_job(
 
     let prefixed_prompt = format!("{memory_context}[cron:{} {name}] {prompt}", job.id);
     let model_override = job.model.clone();
+    let channel_context = match (&job.delivery.channel, &job.delivery.to) {
+        (Some(ch), Some(to)) if !ch.trim().is_empty() && !to.trim().is_empty() => {
+            Some((ch.clone(), to.clone()))
+        }
+        _ => None,
+    };
 
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {
@@ -295,6 +301,7 @@ async fn run_agent_job(
                 false,
                 None,
                 job.allowed_tools.clone(),
+                channel_context,
             ))
             .await
         }

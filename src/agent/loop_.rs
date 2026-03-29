@@ -3527,6 +3527,7 @@ pub async fn run(
     interactive: bool,
     session_state_file: Option<PathBuf>,
     allowed_tools: Option<Vec<String>>,
+    channel_context: Option<(String, String)>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
     let base_observer = observability::create_observer(&config.observability);
@@ -3907,7 +3908,25 @@ pub async fn run(
     } else {
         None
     };
-    let channel_name = if interactive { "cli" } else { "daemon" };
+    let channel_name_buf = channel_context
+        .as_ref()
+        .map(|(ch, _)| ch.clone())
+        .unwrap_or_else(|| {
+            if interactive {
+                "cli".to_string()
+            } else {
+                "daemon".to_string()
+            }
+        });
+    let channel_name = channel_name_buf.as_str();
+    let run_reply_target = channel_context.as_ref().and_then(|(_, t)| {
+        let s = t.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    });
     let memory_session_id = session_state_file.as_deref().and_then(|path| {
         let raw = path.to_string_lossy().trim().to_string();
         if raw.is_empty() {
@@ -4022,7 +4041,7 @@ pub async fn run(
                 false,
                 approval_manager.as_ref(),
                 channel_name,
-                None,
+                run_reply_target.as_deref(),
                 &config.multimodal,
                 config.agent.max_tool_iterations,
                 None,
@@ -4328,7 +4347,7 @@ pub async fn run(
                     true,
                     approval_manager.as_ref(),
                     channel_name,
-                    None,
+                    run_reply_target.as_deref(),
                     &config.multimodal,
                     config.agent.max_tool_iterations,
                     Some(cancel_token.clone()),
