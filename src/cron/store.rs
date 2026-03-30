@@ -649,6 +649,7 @@ pub fn sync_declarative_jobs(
                 Some(d) => convert_delivery_decl(d),
                 None => DeliveryConfig::default(),
             };
+            validate_delivery_config(Some(&delivery))?;
             let delivery_json = serde_json::to_string(&delivery)?;
             let allowed_tools_json = encode_allowed_tools(decl.allowed_tools.as_ref())?;
             let command = decl.command.as_deref().unwrap_or("");
@@ -841,6 +842,7 @@ fn convert_delivery_decl(decl: &crate::config::schema::DeliveryConfigDecl) -> De
         channel: decl.channel.clone(),
         to: decl.to.clone(),
         best_effort: decl.best_effort,
+        mention_user: decl.mention_user.clone(),
     }
 }
 
@@ -1013,6 +1015,7 @@ mod tests {
                 channel: Some("discord".into()),
                 to: Some("1234567890".into()),
                 best_effort: true,
+                mention_user: None,
             }),
         )
         .unwrap();
@@ -1047,6 +1050,7 @@ mod tests {
                 channel: Some("discord".into()),
                 to: None,
                 best_effort: true,
+                mention_user: None,
             }),
             false,
             None,
@@ -1074,6 +1078,7 @@ mod tests {
                 channel: Some("discord".into()),
                 to: Some("1234567890".into()),
                 best_effort: true,
+                mention_user: None,
             }),
         )
         .unwrap_err();

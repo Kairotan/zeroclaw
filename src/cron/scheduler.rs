@@ -441,7 +441,19 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("delivery.to is required for announce mode"))?;
 
-    deliver_announcement(config, channel, target, output).await
+    let mention = delivery
+        .mention_user
+        .as_deref()
+        .filter(|uid| !uid.trim().is_empty())
+        .and_then(|uid| {
+            crate::cron::ValidatedMention::try_new(channel, uid.trim())
+                .map_err(|e| {
+                    tracing::warn!("cron job has invalid mention_user, skipping mention: {e}");
+                    e
+                })
+                .ok()
+        });
+    deliver_announcement(config, channel, target, output, mention.as_ref()).await
 }
 
 /// Output that has been scanned for credential leaks and redacted if necessary.
@@ -453,6 +465,13 @@ impl RedactedOutput {
     /// Access the safe-to-send content.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Prepend a validated mention to the scanned content.
+    /// The mention is formatted by the `Display` impl of [`ValidatedMention`] and
+    /// separated from the body by a newline.
+    pub(crate) fn prepend_mention(self, mention: &crate::cron::ValidatedMention) -> Self {
+        RedactedOutput(format!("{}\n{}", mention, self.0))
     }
 }
 
@@ -481,9 +500,14 @@ pub(crate) async fn deliver_announcement(
     channel: &str,
     target: &str,
     output: &str,
+    mention: Option<&crate::cron::ValidatedMention>,
 ) -> Result<()> {
-    // Scan for credential leaks before delivering cron job output to channel.
+    // Scan LLM output for credential leaks, then optionally prepend a validated mention.
     let safe_output = scan_and_redact_output(channel, target, output);
+    let safe_output = match mention {
+        Some(m) => safe_output.prepend_mention(m),
+        None => safe_output,
+    };
 
     match channel.to_ascii_lowercase().as_str() {
         "telegram" => {
@@ -1220,6 +1244,7 @@ mod tests {
                 channel: Some("telegram".into()),
                 to: Some("123456".into()),
                 best_effort: false,
+                mention_user: None,
             }),
             false,
             None,
@@ -1259,6 +1284,7 @@ mod tests {
                 channel: Some("telegram".into()),
                 to: Some("123456".into()),
                 best_effort: true,
+                mention_user: None,
             }),
             false,
             None,
@@ -1326,6 +1352,7 @@ mod tests {
             channel: Some("invalid".into()),
             to: Some("target".into()),
             best_effort: true,
+            mention_user: None,
         };
         let err = deliver_if_configured(&config, &job, "x").await.unwrap_err();
         assert!(err.to_string().contains("unsupported delivery channel"));
@@ -1358,6 +1385,7 @@ mod tests {
             channel: Some("matrix".into()),
             to: Some("!ops:matrix.org".into()),
             best_effort: false,
+            mention_user: None,
         };
 
         let err = deliver_if_configured(&config, &job, "hello")
@@ -1377,6 +1405,7 @@ mod tests {
             channel: Some("matrix".into()),
             to: Some("!ops:matrix.org".into()),
             best_effort: false,
+            mention_user: None,
         };
 
         let err = deliver_if_configured(&config, &job, "hello")

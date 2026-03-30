@@ -19,7 +19,7 @@ pub use store::{
 };
 pub use types::{
     CronJob, CronJobPatch, CronRun, DeliveryConfig, JobType, Schedule, SessionTarget,
-    deserialize_maybe_stringified,
+    ValidatedMention, deserialize_maybe_stringified,
 };
 
 /// Validate a shell command against the full security policy (allowlist + risk gate).
@@ -73,6 +73,13 @@ pub(crate) fn validate_delivery_config(delivery: Option<&DeliveryConfig>) -> Res
         .is_some_and(|value| !value.is_empty());
     if !has_target {
         bail!("delivery.to is required for announce mode");
+    }
+
+    if let Some(uid) = delivery.mention_user.as_deref() {
+        let uid = uid.trim();
+        if !uid.is_empty() {
+            ValidatedMention::try_new(channel, uid).map_err(|e| anyhow!("{e}"))?;
+        }
     }
 
     Ok(())
