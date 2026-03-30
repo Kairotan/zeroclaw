@@ -82,6 +82,62 @@ pub(crate) fn trim_tool_message_content(content: &str, max_chars: usize) -> Stri
     truncate_tool_result(content, max_chars)
 }
 
+/// Replace the oldest `[IMAGE:...]` markers in history with `[image removed]`
+/// when the total count across all user messages exceeds `max_images`.
+/// Walks messages oldest-first so recent images are preserved.
+/// Returns the number of markers replaced.
+pub(crate) fn trim_history_images(history: &mut [ChatMessage], max_images: usize) -> usize {
+    let total = crate::multimodal::count_image_markers(history);
+    if total <= max_images {
+        return 0;
+    }
+    let mut to_remove = total - max_images;
+    let mut removed = 0;
+
+    for msg in history.iter_mut() {
+        if msg.role != "user" || to_remove == 0 {
+            continue;
+        }
+        let original = std::mem::take(&mut msg.content);
+        let mut new_content = String::with_capacity(original.len());
+        let mut cursor = 0usize;
+        let mut msg_removed = 0;
+
+        while let Some(rel_start) = original[cursor..].find("[IMAGE:") {
+            let start = cursor + rel_start;
+            new_content.push_str(&original[cursor..start]);
+
+            let marker_start = start + "[IMAGE:".len();
+            let Some(rel_end) = original[marker_start..].find(']') else {
+                // Malformed marker — keep as-is and stop scanning this message.
+                new_content.push_str(&original[start..]);
+                cursor = original.len();
+                break;
+            };
+            let end = marker_start + rel_end;
+            let candidate = original[marker_start..end].trim();
+
+            if candidate.is_empty() || to_remove == 0 {
+                // Empty marker (invalid) or budget exhausted — keep as-is.
+                new_content.push_str(&original[start..=end]);
+            } else {
+                new_content.push_str("[image removed]");
+                to_remove -= 1;
+                msg_removed += 1;
+            }
+            cursor = end + 1;
+        }
+
+        if cursor < original.len() {
+            new_content.push_str(&original[cursor..]);
+        }
+
+        msg.content = new_content;
+        removed += msg_removed;
+    }
+    removed
+}
+
 /// Aggressively trim old tool result messages in history to recover from
 /// context overflow. Keeps the last `protect_last_n` messages untouched.
 /// Returns total characters saved.

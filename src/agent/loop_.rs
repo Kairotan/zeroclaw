@@ -2433,6 +2433,15 @@ pub(crate) async fn run_tool_call_loop(
         }
         let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
 
+        let (max_images, _) = multimodal_config.effective_limits();
+        let trimmed_images = crate::agent::history::trim_history_images(history, max_images);
+        if trimmed_images > 0 {
+            tracing::debug!(
+                trimmed_images,
+                "evicted old images from history to stay within multimodal limit"
+            );
+        }
+
         let image_marker_count = multimodal::count_image_markers(history);
 
         // ── Vision provider routing ──────────────────────────
