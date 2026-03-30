@@ -317,14 +317,9 @@ impl CopilotProvider {
                                     })
                                     .collect::<Vec<_>>();
 
-                                let content = value
-                                    .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(|s| ApiContent::Text(s.to_string()));
-
                                 return ApiMessage {
                                     role: "assistant".to_string(),
-                                    content,
+                                    content: None,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
                                 };

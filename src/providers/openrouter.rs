@@ -232,17 +232,13 @@ impl OpenRouterProvider {
                                         },
                                     })
                                     .collect::<Vec<_>>();
-                                let content = value
-                                    .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(|value| MessageContent::Text(value.to_string()));
                                 let reasoning_content = value
                                     .get("reasoning_content")
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
                                 return NativeMessage {
                                     role: "assistant".to_string(),
-                                    content,
+                                    content: None,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
                                     reasoning_content,
@@ -958,16 +954,9 @@ mod tests {
         let converted = OpenRouterProvider::convert_messages(&messages);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].role, "assistant");
-        assert_eq!(
-            converted[0]
-                .content
-                .as_ref()
-                .and_then(|content| match content {
-                    MessageContent::Text(value) => Some(value.as_str()),
-                    MessageContent::Parts(_) => None,
-                }),
-            Some("Using tool")
-        );
+        // Content is always stripped when tool_calls are present to prevent
+        // strict APIs (e.g. Gemini) from rejecting leaked model reasoning text.
+        assert!(converted[0].content.is_none());
 
         let tool_calls = converted[0].tool_calls.as_ref().unwrap();
         assert_eq!(tool_calls.len(), 1);
