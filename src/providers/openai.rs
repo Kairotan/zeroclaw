@@ -269,17 +269,13 @@ impl OpenAiProvider {
                                         },
                                     })
                                     .collect::<Vec<_>>();
-                                let content = value
-                                    .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
                                 let reasoning_content = value
                                     .get("reasoning_content")
                                     .and_then(serde_json::Value::as_str)
                                     .map(ToString::to_string);
                                 return NativeMessage {
                                     role: "assistant".to_string(),
-                                    content,
+                                    content: None,
                                     tool_call_id: None,
                                     tool_calls: Some(tool_calls),
                                     reasoning_content,
