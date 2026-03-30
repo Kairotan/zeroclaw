@@ -265,7 +265,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                                 continue;
                             };
                         let _ = crate::cron::scheduler::deliver_announcement(
-                            &dm_config, &channel, &target, &alert,
+                            &dm_config, &channel, &target, &alert, None,
                         )
                         .await;
                     }
@@ -475,6 +475,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                             channel,
                             target,
                             &announcement,
+                            None,
                         )
                         .await
                         {

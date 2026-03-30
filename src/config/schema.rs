@@ -5891,6 +5891,11 @@ pub struct DeliveryConfigDecl {
     /// Best-effort delivery. Default: `true`.
     #[serde(default = "default_true")]
     pub best_effort: bool,
+    /// Optional user ID to mention at the start of the delivered message.
+    /// Must be a valid identifier for the target channel (e.g. Discord snowflake,
+    /// Slack member ID, Mattermost username). Channels without mention support reject this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_user: Option<String>,
 }
 
 fn default_job_type_decl() -> String {

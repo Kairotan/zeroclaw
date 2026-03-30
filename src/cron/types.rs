@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 /// Try to deserialize a `serde_json::Value` as `T`.  If the value is a JSON
 /// string that looks like an object (i.e. the LLM double-serialized it), parse
@@ -23,6 +25,81 @@ pub fn deserialize_maybe_stringified<T: serde::de::DeserializeOwned>(
                 }
             }
             Err(first_err)
+        }
+    }
+}
+
+/// A validated, channel-specific user mention.
+///
+/// Constructed via [`ValidatedMention::try_new`], which enforces platform-specific
+/// format constraints. This prevents prompt-injected broad mentions (e.g. `@everyone`)
+/// and ensures the value cannot be mistaken for a credential by the leak detector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidatedMention {
+    /// Discord user mention — snowflake ID, 17–20 digits.
+    Discord(String),
+    /// Slack member mention — `[UW][A-Z0-9]{8,10}`.
+    Slack(String),
+    /// Mattermost username mention — `[a-z0-9._-]{1,64}`.
+    Mattermost(String),
+}
+
+impl ValidatedMention {
+    /// Validate and construct a mention for the given channel.
+    ///
+    /// Returns an error if the channel does not support mentions or if `user_id`
+    /// does not match the expected format for that channel.
+    pub fn try_new(channel: &str, user_id: &str) -> Result<Self, String> {
+        match channel.to_ascii_lowercase().as_str() {
+            "discord" => {
+                static RE: OnceLock<Regex> = OnceLock::new();
+                let re = RE.get_or_init(|| Regex::new(r"^\d{17,20}$").unwrap());
+                if re.is_match(user_id) {
+                    Ok(Self::Discord(user_id.to_string()))
+                } else {
+                    Err(format!(
+                        "invalid Discord user ID '{}': must be 17-20 digits",
+                        user_id
+                    ))
+                }
+            }
+            "slack" => {
+                static RE: OnceLock<Regex> = OnceLock::new();
+                let re = RE.get_or_init(|| Regex::new(r"^[UW][A-Z0-9]{8,10}$").unwrap());
+                if re.is_match(user_id) {
+                    Ok(Self::Slack(user_id.to_string()))
+                } else {
+                    Err(format!(
+                        "invalid Slack member ID '{}': must match [UW][A-Z0-9]{{8,10}}",
+                        user_id
+                    ))
+                }
+            }
+            "mattermost" => {
+                static RE: OnceLock<Regex> = OnceLock::new();
+                let re = RE.get_or_init(|| Regex::new(r"^[a-z0-9._-]{1,64}$").unwrap());
+                if re.is_match(user_id) {
+                    Ok(Self::Mattermost(user_id.to_string()))
+                } else {
+                    Err(format!(
+                        "invalid Mattermost username '{}': must match [a-z0-9._-]{{1,64}}",
+                        user_id
+                    ))
+                }
+            }
+            other => Err(format!(
+                "delivery channel '{}' does not support user mentions",
+                other
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ValidatedMention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discord(id) | Self::Slack(id) => write!(f, "<@{}>", id),
+            Self::Mattermost(id) => write!(f, "@{}", id),
         }
     }
 }
@@ -110,6 +187,11 @@ pub struct DeliveryConfig {
     pub to: Option<String>,
     #[serde(default = "default_true")]
     pub best_effort: bool,
+    /// Optional user identifier to mention at the start of the delivered message.
+    /// The value should be the raw user ID for the target channel (e.g. Discord snowflake,
+    /// Slack member ID). Each channel handler formats it appropriately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mention_user: Option<String>,
 }
 
 impl Default for DeliveryConfig {
@@ -119,6 +201,7 @@ impl Default for DeliveryConfig {
             channel: None,
             to: None,
             best_effort: true,
+            mention_user: None,
         }
     }
 }
