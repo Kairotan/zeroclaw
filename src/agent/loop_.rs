@@ -4065,32 +4065,35 @@ pub async fn run(
         #[allow(unused_assignments)]
         let mut response = String::new();
         loop {
-            match run_tool_call_loop(
-                provider.as_ref(),
-                &mut history,
-                &tools_registry,
-                observer.as_ref(),
-                &provider_name,
-                &model_name,
-                effective_temperature,
-                false,
-                approval_manager.as_ref(),
-                channel_name,
-                run_reply_target.as_deref(),
-                &config.multimodal,
-                config.agent.max_tool_iterations,
-                None,
-                None,
-                None,
-                &excluded_tools,
-                &config.agent.tool_call_dedup_exempt,
-                activated_handle.as_ref(),
-                Some(model_switch_callback.clone()),
-                &config.pacing,
-                config.agent.max_tool_result_chars,
-                config.agent.max_context_tokens,
-                None, // shared_budget
-                force_xml_tools,
+            match scope_thread_id(
+                run_reply_target.clone(),
+                run_tool_call_loop(
+                    provider.as_ref(),
+                    &mut history,
+                    &tools_registry,
+                    observer.as_ref(),
+                    &provider_name,
+                    &model_name,
+                    effective_temperature,
+                    false,
+                    approval_manager.as_ref(),
+                    channel_name,
+                    run_reply_target.as_deref(),
+                    &config.multimodal,
+                    config.agent.max_tool_iterations,
+                    None,
+                    None,
+                    None,
+                    &excluded_tools,
+                    &config.agent.tool_call_dedup_exempt,
+                    activated_handle.as_ref(),
+                    Some(model_switch_callback.clone()),
+                    &config.pacing,
+                    config.agent.max_tool_result_chars,
+                    config.agent.max_context_tokens,
+                    None, // shared_budget
+                    force_xml_tools,
+                ),
             )
             .await
             {
@@ -4372,32 +4375,35 @@ pub async fn run(
             });
 
             let response = loop {
-                match run_tool_call_loop(
-                    provider.as_ref(),
-                    &mut history,
-                    &tools_registry,
-                    observer.as_ref(),
-                    &provider_name,
-                    &model_name,
-                    turn_temperature,
-                    true,
-                    approval_manager.as_ref(),
-                    channel_name,
-                    run_reply_target.as_deref(),
-                    &config.multimodal,
-                    config.agent.max_tool_iterations,
-                    Some(cancel_token.clone()),
-                    Some(delta_tx.clone()),
-                    None,
-                    &excluded_tools,
-                    &config.agent.tool_call_dedup_exempt,
-                    activated_handle.as_ref(),
-                    Some(model_switch_callback.clone()),
-                    &config.pacing,
-                    config.agent.max_tool_result_chars,
-                    config.agent.max_context_tokens,
-                    None, // shared_budget
-                    force_xml_tools,
+                match scope_thread_id(
+                    run_reply_target.clone(),
+                    run_tool_call_loop(
+                        provider.as_ref(),
+                        &mut history,
+                        &tools_registry,
+                        observer.as_ref(),
+                        &provider_name,
+                        &model_name,
+                        turn_temperature,
+                        true,
+                        approval_manager.as_ref(),
+                        channel_name,
+                        run_reply_target.as_deref(),
+                        &config.multimodal,
+                        config.agent.max_tool_iterations,
+                        Some(cancel_token.clone()),
+                        Some(delta_tx.clone()),
+                        None,
+                        &excluded_tools,
+                        &config.agent.tool_call_dedup_exempt,
+                        activated_handle.as_ref(),
+                        Some(model_switch_callback.clone()),
+                        &config.pacing,
+                        config.agent.max_tool_result_chars,
+                        config.agent.max_context_tokens,
+                        None, // shared_budget
+                        force_xml_tools,
+                    ),
                 )
                 .await
                 {

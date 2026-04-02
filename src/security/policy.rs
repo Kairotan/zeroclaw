@@ -3406,6 +3406,26 @@ mod tests {
         assert!(t.is_exhausted(PerSenderTracker::GLOBAL_KEY, 1));
     }
 
+    #[tokio::test]
+    async fn per_sender_tracker_uses_task_local_thread_scope() {
+        let t = PerSenderTracker::new();
+
+        crate::agent::loop_::scope_thread_id(Some("cron:chat-a".to_string()), async {
+            assert!(t.record_for_current(1));
+            assert!(t.is_limited_for_current(1));
+        })
+        .await;
+
+        crate::agent::loop_::scope_thread_id(Some("cron:chat-b".to_string()), async {
+            assert!(t.record_for_current(1));
+            assert!(!t.is_limited_for_current(2));
+        })
+        .await;
+
+        assert!(t.is_exhausted("cron:chat-a", 1));
+        assert!(!t.is_exhausted("cron:chat-b", 2));
+    }
+
     #[test]
     fn per_sender_tracker_is_exhausted_reads_without_spurious_insert() {
         let t = PerSenderTracker::new();
