@@ -3005,7 +3005,7 @@ async fn process_channel_message(
                         Some(msg.sender.clone()),
                         crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
                             cost_tracking_context.clone(),
-                        run_tool_call_loop_with_dispatch_mode(
+                            run_tool_call_loop_with_dispatch_mode(
                         active_provider.as_ref(),
                         &mut history,
                         ctx.tools_registry.as_ref(),
