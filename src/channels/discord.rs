@@ -893,6 +893,83 @@ fn base64_decode(input: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+fn format_approval_arguments_summary(arguments: &serde_json::Value) -> String {
+    let summary = arguments.to_string();
+    if summary.chars().count() <= 300 {
+        return summary;
+    }
+    let truncated: String = summary.chars().take(300).collect();
+    format!("{truncated}...")
+}
+
+fn interaction_user_id(interaction: &serde_json::Value) -> Option<&str> {
+    interaction
+        .get("member")
+        .and_then(|member| member.get("user"))
+        .and_then(|user| user.get("id"))
+        .and_then(|id| id.as_str())
+        .or_else(|| {
+            interaction
+                .get("user")
+                .and_then(|user| user.get("id"))
+                .and_then(|id| id.as_str())
+        })
+}
+
+fn approval_interaction_is_from_requester(
+    pending: &crate::approval::PendingApproval,
+    user_id: &str,
+) -> bool {
+    pending
+        .requester_user_id
+        .as_deref()
+        .is_none_or(|requester| requester == user_id)
+}
+
+async fn send_interaction_callback(
+    client: &reqwest::Client,
+    bot_token: &str,
+    interaction_id: &str,
+    interaction_token: &str,
+    body: serde_json::Value,
+) {
+    if interaction_id.is_empty() || interaction_token.is_empty() {
+        return;
+    }
+    let url = format!(
+        "https://discord.com/api/v10/interactions/{interaction_id}/{interaction_token}/callback"
+    );
+    let _ = client
+        .post(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .json(&body)
+        .send()
+        .await;
+}
+
+async fn reject_interaction_with_ephemeral_message(
+    client: &reqwest::Client,
+    bot_token: &str,
+    interaction_id: &str,
+    interaction_token: &str,
+    content: &str,
+) {
+    send_interaction_callback(
+        client,
+        bot_token,
+        interaction_id,
+        interaction_token,
+        serde_json::json!({
+            "type": 4,
+            "data": {
+                "content": content,
+                "flags": 64
+            }
+        }),
+    )
+    .await;
+}
+
 /// Send a Discord message with Yes / No / Always approval buttons.
 ///
 /// `discord_channel_id` is the Discord channel snowflake to post into.
@@ -906,14 +983,7 @@ pub async fn send_approval_buttons(
     request: &crate::approval::ApprovalRequest,
 ) -> anyhow::Result<()> {
     let client = crate::config::build_channel_proxy_client("channel.discord.approval", proxy_url);
-    let summary = {
-        let s = request.arguments.to_string();
-        if s.len() > 300 {
-            format!("{}...", &s[..300])
-        } else {
-            s
-        }
-    };
+    let summary = format_approval_arguments_summary(&request.arguments);
     let content = format!(
         "**Approval required**\nTool: `{}`\n```\n{}\n```",
         request.tool_name, summary
@@ -1253,10 +1323,6 @@ impl Channel for DiscordChannel {
                         if d.get("type").and_then(|t| t.as_u64()) != Some(3) {
                             continue;
                         }
-                        let interaction_id =
-                            d.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        let interaction_token =
-                            d.get("token").and_then(|v| v.as_str()).unwrap_or("");
                         let custom_id = d
                             .get("data")
                             .and_then(|data| data.get("custom_id"))
@@ -1266,6 +1332,40 @@ impl Channel for DiscordChannel {
                         // Parse "zc:approval:<yes|no|always>:<uuid>"
                         let parts: Vec<&str> = custom_id.splitn(4, ':').collect();
                         if parts.len() == 4 && parts[0] == "zc" && parts[1] == "approval" {
+                            let interaction_id =
+                                d.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            let interaction_token =
+                                d.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                            let user_id = interaction_user_id(d).unwrap_or("");
+                            if !self.is_user_allowed(user_id) {
+                                tracing::warn!("Discord: ignoring approval interaction from unauthorized user: {user_id}");
+                                reject_interaction_with_ephemeral_message(
+                                    &self.http_client(),
+                                    &self.bot_token,
+                                    interaction_id,
+                                    interaction_token,
+                                    "You are not allowed to approve this tool call.",
+                                )
+                                .await;
+                                continue;
+                            }
+                            if let Some(ref gid) = guild_filter {
+                                let interaction_guild =
+                                    d.get("guild_id").and_then(serde_json::Value::as_str);
+                                if let Some(g) = interaction_guild {
+                                    if g != gid {
+                                        reject_interaction_with_ephemeral_message(
+                                            &self.http_client(),
+                                            &self.bot_token,
+                                            interaction_id,
+                                            interaction_token,
+                                            "This approval prompt is not valid in this server.",
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                }
+                            }
                             let response = match parts[2] {
                                 "yes" => crate::approval::ApprovalResponse::Yes,
                                 "always" => crate::approval::ApprovalResponse::Always,
@@ -1273,24 +1373,55 @@ impl Channel for DiscordChannel {
                                 _ => crate::approval::ApprovalResponse::No,
                             };
                             let approval_id = parts[3].to_string();
-                            let sender = self.pending_approvals.lock().await.remove(&approval_id);
-                            if let Some(tx) = sender {
-                                let _ = tx.send(response);
+                            let (pending, reject_message) = {
+                                let mut pending_approvals = self.pending_approvals.lock().await;
+                                if let Some(pending) = pending_approvals.get(&approval_id) {
+                                    if approval_interaction_is_from_requester(pending, user_id) {
+                                        (pending_approvals.remove(&approval_id), None)
+                                    } else {
+                                        tracing::warn!(
+                                            approval_id,
+                                            actor = user_id,
+                                            requester = pending.requester_user_id.as_deref().unwrap_or(""),
+                                            "Discord: ignoring approval interaction from a different user"
+                                        );
+                                        (
+                                            None,
+                                            Some(
+                                                "Only the user who triggered this tool call can approve it.",
+                                            ),
+                                        )
+                                    }
+                                } else {
+                                    (
+                                        None,
+                                        Some("This approval request is no longer active."),
+                                    )
+                                }
+                            };
+                            if let Some(message) = reject_message {
+                                reject_interaction_with_ephemeral_message(
+                                    &self.http_client(),
+                                    &self.bot_token,
+                                    interaction_id,
+                                    interaction_token,
+                                    message,
+                                )
+                                .await;
+                                continue;
+                            }
+                            if let Some(pending) = pending {
+                                let _ = pending.response_tx.send(response);
                             }
                             // Acknowledge interaction — Discord requires a response within 3 s.
-                            let ack_url = format!(
-                                "https://discord.com/api/v10/interactions/{interaction_id}/{interaction_token}/callback"
-                            );
-                            let _ = self
-                                .http_client()
-                                .post(&ack_url)
-                                .header(
-                                    "Authorization",
-                                    format!("Bot {}", self.bot_token),
-                                )
-                                .json(&serde_json::json!({"type": 6}))
-                                .send()
-                                .await;
+                            send_interaction_callback(
+                                &self.http_client(),
+                                &self.bot_token,
+                                interaction_id,
+                                interaction_token,
+                                serde_json::json!({"type": 6}),
+                            )
+                            .await;
                         }
                         continue;
                     }
@@ -1887,6 +2018,68 @@ mod tests {
         let token = "MTIzNDU2.fake.hmac";
         let id = DiscordChannel::bot_user_id_from_token(token);
         assert_eq!(id, Some("123456".to_string()));
+    }
+
+    #[test]
+    fn interaction_user_id_extracts_guild_member_and_dm_user() {
+        let guild_interaction = serde_json::json!({
+            "member": {
+                "user": {
+                    "id": "guild-user-1"
+                }
+            }
+        });
+        let dm_interaction = serde_json::json!({
+            "user": {
+                "id": "dm-user-2"
+            }
+        });
+
+        assert_eq!(
+            interaction_user_id(&guild_interaction),
+            Some("guild-user-1")
+        );
+        assert_eq!(interaction_user_id(&dm_interaction), Some("dm-user-2"));
+    }
+
+    #[test]
+    fn interaction_user_id_returns_none_when_missing() {
+        assert_eq!(interaction_user_id(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn approval_interaction_is_from_requester_requires_matching_user_when_bound() {
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        let pending = crate::approval::PendingApproval {
+            requester_user_id: Some("alice".to_string()),
+            response_tx,
+        };
+
+        assert!(approval_interaction_is_from_requester(&pending, "alice"));
+        assert!(!approval_interaction_is_from_requester(&pending, "bob"));
+    }
+
+    #[test]
+    fn approval_interaction_is_from_requester_allows_unbound_legacy_prompt() {
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        let pending = crate::approval::PendingApproval {
+            requester_user_id: None,
+            response_tx,
+        };
+
+        assert!(approval_interaction_is_from_requester(&pending, "alice"));
+    }
+
+    #[test]
+    fn format_approval_arguments_summary_truncates_unicode_safely() {
+        let args = serde_json::json!({
+            "content": "🦀".repeat(400),
+        });
+
+        let summary = format_approval_arguments_summary(&args);
+
+        assert!(summary.ends_with("..."));
+        assert!(summary.is_char_boundary(summary.len()));
     }
 
     #[test]

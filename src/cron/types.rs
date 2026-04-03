@@ -233,6 +233,10 @@ pub struct CronJob {
     /// When `None`, all tools are available (backward compatible default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// Requesting channel user who created this job, used to bind approval
+    /// button clicks when the scheduler later executes the agent job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_requester_user_id: Option<String>,
     /// How the job was created: `"imperative"` (CLI/API) or `"declarative"` (config).
     #[serde(default = "default_source")]
     pub source: String,

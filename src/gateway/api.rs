@@ -326,6 +326,7 @@ pub async fn handle_api_cron_add(
             delivery,
             delete_after_run,
             allowed_tools,
+            None,
         )
     } else {
         let command = match command.as_deref() {

@@ -81,6 +81,7 @@ pub fn add_agent_job(
     delivery: Option<DeliveryConfig>,
     delete_after_run: bool,
     allowed_tools: Option<Vec<String>>,
+    approval_requester_user_id: Option<String>,
 ) -> Result<CronJob> {
     let now = Utc::now();
     validate_schedule(&schedule, now)?;
@@ -95,8 +96,9 @@ pub fn add_agent_job(
         conn.execute(
             "INSERT INTO cron_jobs (
                 id, expression, command, schedule, job_type, prompt, name, session_target, model,
-                enabled, delivery, delete_after_run, allowed_tools, created_at, next_run
-             ) VALUES (?1, ?2, '', ?3, 'agent', ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11, ?12)",
+                enabled, delivery, delete_after_run, allowed_tools, approval_requester_user_id,
+                created_at, next_run
+             ) VALUES (?1, ?2, '', ?3, 'agent', ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 expression,
@@ -108,6 +110,7 @@ pub fn add_agent_job(
                 serde_json::to_string(&delivery)?,
                 if delete_after_run { 1 } else { 0 },
                 encode_allowed_tools(allowed_tools.as_ref())?,
+                approval_requester_user_id,
                 now.to_rfc3339(),
                 next_run.to_rfc3339(),
             ],
@@ -124,7 +127,7 @@ pub fn list_jobs(config: &Config) -> Result<Vec<CronJob>> {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
                     enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output,
-                    allowed_tools, source
+                    allowed_tools, source, approval_requester_user_id
              FROM cron_jobs ORDER BY next_run ASC",
         )?;
 
@@ -143,7 +146,7 @@ pub fn get_job(config: &Config, job_id: &str) -> Result<CronJob> {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
                     enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output,
-                    allowed_tools, source
+                    allowed_tools, source, approval_requester_user_id
              FROM cron_jobs WHERE id = ?1",
         )?;
 
@@ -177,7 +180,7 @@ pub fn due_jobs(config: &Config, now: DateTime<Utc>) -> Result<Vec<CronJob>> {
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
                     enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output,
-                    allowed_tools, source
+                    allowed_tools, source, approval_requester_user_id
              FROM cron_jobs
              WHERE enabled = 1 AND next_run <= ?1
              ORDER BY next_run ASC
@@ -207,7 +210,7 @@ pub fn all_overdue_jobs(config: &Config, now: DateTime<Utc>) -> Result<Vec<CronJ
         let mut stmt = conn.prepare(
             "SELECT id, expression, command, schedule, job_type, prompt, name, session_target, model,
                     enabled, delivery, delete_after_run, created_at, next_run, last_run, last_status, last_output,
-                    allowed_tools, source
+                    allowed_tools, source, approval_requester_user_id
              FROM cron_jobs
              WHERE enabled = 1 AND next_run <= ?1
              ORDER BY next_run ASC",
@@ -279,8 +282,8 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
             "UPDATE cron_jobs
              SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4, prompt = ?5, name = ?6,
                  session_target = ?7, model = ?8, enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                 allowed_tools = ?12, next_run = ?13
-             WHERE id = ?14",
+                 allowed_tools = ?12, approval_requester_user_id = ?13, next_run = ?14
+             WHERE id = ?15",
             params![
                 job.expression,
                 job.command,
@@ -294,6 +297,7 @@ pub fn update_job(config: &Config, job_id: &str, patch: CronJobPatch) -> Result<
                 serde_json::to_string(&job.delivery)?,
                 if job.delete_after_run { 1 } else { 0 },
                 encode_allowed_tools(job.allowed_tools.as_ref())?,
+                job.approval_requester_user_id,
                 job.next_run.to_rfc3339(),
                 job.id,
             ],
@@ -496,6 +500,7 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJob> {
     let created_at_raw: String = row.get(12)?;
     let allowed_tools_raw: Option<String> = row.get(17)?;
     let source: Option<String> = row.get(18)?;
+    let approval_requester_user_id: Option<String> = row.get(19)?;
 
     Ok(CronJob {
         id: row.get(0)?,
@@ -511,6 +516,7 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJob> {
         delivery,
         delete_after_run: row.get::<_, i64>(11)? != 0,
         source: source.unwrap_or_else(|| "imperative".to_string()),
+        approval_requester_user_id,
         created_at: parse_rfc3339(&created_at_raw).map_err(sql_conversion_error)?,
         next_run: parse_rfc3339(&next_run_raw).map_err(sql_conversion_error)?,
         last_run: match last_run_raw {
@@ -680,7 +686,8 @@ pub fn sync_declarative_jobs(
                          SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4,
                              prompt = ?5, name = ?6, session_target = ?7, model = ?8,
                              enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                             allowed_tools = ?12, source = 'declarative', next_run = ?13
+                             allowed_tools = ?12, approval_requester_user_id = NULL,
+                             source = 'declarative', next_run = ?13
                          WHERE id = ?14",
                         params![
                             expression,
@@ -708,7 +715,8 @@ pub fn sync_declarative_jobs(
                          SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4,
                              prompt = ?5, name = ?6, session_target = ?7, model = ?8,
                              enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                             allowed_tools = ?12, source = 'declarative'
+                             allowed_tools = ?12, approval_requester_user_id = NULL,
+                             source = 'declarative'
                          WHERE id = ?13",
                         params![
                             expression,
@@ -739,8 +747,8 @@ pub fn sync_declarative_jobs(
                     "INSERT INTO cron_jobs (
                         id, expression, command, schedule, job_type, prompt, name,
                         session_target, model, enabled, delivery, delete_after_run,
-                        allowed_tools, source, created_at, next_run
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'declarative', ?14, ?15)",
+                        allowed_tools, source, approval_requester_user_id, created_at, next_run
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'declarative', NULL, ?14, ?15)",
                     params![
                         decl.id,
                         expression,
@@ -937,6 +945,7 @@ fn with_connection<T>(config: &Config, f: impl FnOnce(&Connection) -> Result<T>)
     add_column_if_missing(&conn, "delete_after_run", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(&conn, "allowed_tools", "TEXT")?;
     add_column_if_missing(&conn, "source", "TEXT DEFAULT 'imperative'")?;
+    add_column_if_missing(&conn, "approval_requester_user_id", "TEXT")?;
 
     f(&conn)
 }
@@ -1053,6 +1062,7 @@ mod tests {
                 mention_user: None,
             }),
             false,
+            None,
             None,
         )
         .unwrap_err();
@@ -1197,6 +1207,7 @@ mod tests {
             None,
             false,
             Some(vec!["file_read".into(), "web_search".into()]),
+            None,
         )
         .unwrap();
 
@@ -1207,6 +1218,37 @@ mod tests {
 
         let stored = get_job(&config, &job.id).unwrap();
         assert_eq!(stored.allowed_tools, job.allowed_tools);
+    }
+
+    #[test]
+    fn add_agent_job_persists_approval_requester_user_id() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let job = add_agent_job(
+            &config,
+            Some("agent".into()),
+            Schedule::Every { every_ms: 60_000 },
+            "do work",
+            SessionTarget::Isolated,
+            None,
+            None,
+            false,
+            None,
+            Some("discord-user-123".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            job.approval_requester_user_id.as_deref(),
+            Some("discord-user-123")
+        );
+
+        let stored = get_job(&config, &job.id).unwrap();
+        assert_eq!(
+            stored.approval_requester_user_id.as_deref(),
+            Some("discord-user-123")
+        );
     }
 
     #[test]
@@ -1223,6 +1265,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();

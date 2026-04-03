@@ -159,6 +159,12 @@ tokio::task_local! {
     pub static TOOL_LOOP_THREAD_ID: Option<String>;
 }
 
+tokio::task_local! {
+    /// Requesting channel user for the current tool loop.
+    /// Used to bind channel approval decisions to the original requester.
+    static TOOL_LOOP_REQUESTER_USER_ID: Option<String>;
+}
+
 /// Run a future with the thread ID set in task-local storage.
 /// Rate-limiting reads this to assign per-sender buckets.
 pub async fn scope_thread_id<F>(thread_id: Option<String>, future: F) -> F::Output
@@ -166,6 +172,31 @@ where
     F: std::future::Future,
 {
     TOOL_LOOP_THREAD_ID.scope(thread_id, future).await
+}
+
+/// Run a future with both thread and requester IDs set in task-local storage.
+pub async fn scope_thread_and_requester_ids<F>(
+    thread_id: Option<String>,
+    requester_user_id: Option<String>,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    TOOL_LOOP_THREAD_ID
+        .scope(
+            thread_id,
+            TOOL_LOOP_REQUESTER_USER_ID.scope(requester_user_id, future),
+        )
+        .await
+}
+
+/// Return the channel requester currently scoped to this tool loop, if any.
+pub fn current_tool_loop_requester_user_id() -> Option<String> {
+    TOOL_LOOP_REQUESTER_USER_ID
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
 }
 
 /// Computes the list of MCP tool names that should be excluded for a given turn
@@ -3077,10 +3108,11 @@ pub(crate) async fn run_tool_call_loop(
                     continue;
                 }
 
-                if mgr.needs_approval(&tool_name) {
+                if mgr.needs_approval_for_channel(channel_name, &tool_name) {
                     let request = ApprovalRequest {
                         tool_name: tool_name.clone(),
                         arguments: tool_args.clone(),
+                        requester_user_id: current_tool_loop_requester_user_id(),
                     };
 
                     // Interactive CLI: prompt the operator.

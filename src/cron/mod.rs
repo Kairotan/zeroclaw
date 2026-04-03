@@ -220,6 +220,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added agent cron job {}", job.id);
                 println!("  Expr  : {}", job.expression);
@@ -262,6 +263,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added one-shot agent cron job {}", job.id);
                 println!("  At    : {}", job.next_run.to_rfc3339());
@@ -299,6 +301,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added interval agent cron job {}", job.id);
                 println!("  Every(ms): {every_ms}");
@@ -340,6 +343,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added one-shot agent cron job {}", job.id);
                 println!("  At    : {}", job.next_run.to_rfc3339());
@@ -991,6 +995,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();

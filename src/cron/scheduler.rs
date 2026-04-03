@@ -310,17 +310,21 @@ async fn run_agent_job(
 
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {
-            Box::pin(crate::agent::run(
-                config.clone(),
-                Some(prefixed_prompt),
+            Box::pin(crate::agent::loop_::scope_thread_and_requester_ids(
                 None,
-                model_override,
-                config.default_temperature,
-                vec![],
-                false,
-                None,
-                job.allowed_tools.clone(),
-                channel_context,
+                job.approval_requester_user_id.clone(),
+                crate::agent::run(
+                    config.clone(),
+                    Some(prefixed_prompt),
+                    None,
+                    model_override,
+                    config.default_temperature,
+                    vec![],
+                    false,
+                    None,
+                    job.allowed_tools.clone(),
+                    channel_context,
+                ),
             ))
             .await
         }
@@ -851,6 +855,7 @@ mod tests {
             delivery: DeliveryConfig::default(),
             delete_after_run: false,
             allowed_tools: None,
+            approval_requester_user_id: None,
             source: "imperative".into(),
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -1174,6 +1179,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1199,6 +1205,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .unwrap();
@@ -1268,6 +1275,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1308,6 +1316,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1339,6 +1348,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();

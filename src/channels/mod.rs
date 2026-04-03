@@ -108,7 +108,8 @@ pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
     build_tool_instructions, clear_model_switch_request, get_model_switch_state,
-    is_model_switch_requested, run_tool_call_loop, scope_thread_id, scrub_credentials,
+    is_model_switch_requested, run_tool_call_loop, scope_thread_and_requester_ids,
+    scrub_credentials,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;
@@ -2997,10 +2998,11 @@ async fn process_channel_message(
                 () = cancellation_token.cancelled() => LlmExecutionResult::Cancelled,
                 result = tokio::time::timeout(
                     Duration::from_secs(timeout_budget_secs),
-                    scope_thread_id(
+                    scope_thread_and_requester_ids(
                         msg.interruption_scope_id.clone()
                             .or_else(|| msg.thread_ts.clone())
                             .or_else(|| Some(msg.id.clone())),
+                        Some(msg.sender.clone()),
                         crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
                             cost_tracking_context.clone(),
                         run_tool_call_loop(
