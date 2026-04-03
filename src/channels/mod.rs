@@ -1309,7 +1309,12 @@ fn is_tool_call_content(content: &str) -> bool {
         || trimmed.starts_with("{\"name\"")
         || serde_json::from_str::<serde_json::Value>(trimmed)
             .ok()
-            .and_then(|value| value.get("tool_calls").and_then(|calls| calls.as_array()).cloned())
+            .and_then(|value| {
+                value
+                    .get("tool_calls")
+                    .and_then(|calls| calls.as_array())
+                    .cloned()
+            })
             .is_some_and(|calls| !calls.is_empty())
 }
 
