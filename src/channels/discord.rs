@@ -1498,8 +1498,7 @@ impl Channel for DiscordChannel {
                                 if text_parts.is_empty() {
                                     text_parts = voice_text;
                                 } else {
-                                    text_parts = format!("{text_parts}
-            {voice_text}");
+                                    text_parts = format!("{text_parts}\n{voice_text}");
                                 }
                             }
                         }
@@ -2651,6 +2650,77 @@ mod tests {
         })];
         let result = process_attachments(&attachments, &client, None).await;
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn process_attachments_downloads_image_and_video_to_workspace() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/image.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"image-bytes"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/clip.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"video-bytes"))
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let client = reqwest::Client::new();
+        let attachments = vec![
+            serde_json::json!({
+                "url": format!("{}/image.png", server.uri()),
+                "filename": "../image.png",
+                "content_type": "image/png"
+            }),
+            serde_json::json!({
+                "url": format!("{}/clip.mp4", server.uri()),
+                "filename": "clip.mp4",
+                "content_type": "video/mp4"
+            }),
+        ];
+
+        let result = process_attachments(&attachments, &client, Some(temp.path())).await;
+
+        let image_path = temp.path().join("discord_files").join("image.png");
+        let video_path = temp.path().join("discord_files").join("clip.mp4");
+        assert!(image_path.is_file(), "image attachment should be persisted");
+        assert!(video_path.is_file(), "video attachment should be persisted");
+        assert_eq!(std::fs::read(&image_path).unwrap(), b"image-bytes");
+        assert_eq!(std::fs::read(&video_path).unwrap(), b"video-bytes");
+        assert!(result.contains(&format!("[IMAGE:{}]", image_path.display())));
+        assert!(result.contains(&format!("[VIDEO:{}]", video_path.display())));
+    }
+
+    #[tokio::test]
+    async fn process_attachments_falls_back_to_cdn_url_when_download_fails() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing.png"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let client = reqwest::Client::new();
+        let url = format!("{}/missing.png", server.uri());
+        let attachments = vec![serde_json::json!({
+            "url": url,
+            "filename": "missing.png",
+            "content_type": "image/png"
+        })];
+
+        let result = process_attachments(&attachments, &client, Some(temp.path())).await;
+
+        assert_eq!(result, format!("[IMAGE:{}]", attachments[0]["url"].as_str().unwrap()));
+        assert!(!temp.path().join("discord_files").join("missing.png").exists());
     }
 
     #[test]
