@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use super::{
     MemoryExportTool, MemoryForgetTool, MemoryPurgeTool, MemoryRecallTool, MemoryStoreTool,
 };
-use crate::agent::loop_::run_tool_call_loop;
+use crate::agent::loop_::{ToolDispatchMode, run_tool_call_loop_with_dispatch_mode};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::{DelegateAgentConfig, DelegateToolConfig};
 use crate::memory::{Memory, NamespacedMemory};
@@ -1174,7 +1174,7 @@ impl DelegateTool {
             .unwrap_or(self.delegate_config.agentic_timeout_secs);
         let result = tokio::time::timeout(
             Duration::from_secs(agentic_timeout_secs),
-            run_tool_call_loop(
+            run_tool_call_loop_with_dispatch_mode(
                 provider,
                 &mut history,
                 &sub_tools,
@@ -1196,10 +1196,10 @@ impl DelegateTool {
                 None,
                 None,
                 &crate::config::PacingConfig::default(),
-                0,     // max_tool_result_chars: inherit from parent config in future
-                0,     // context_token_budget: 0 = disabled for subagents
-                None,  // shared_budget: TODO thread from parent in future
-                false, // force_xml_tools: subagents inherit provider capabilities
+                0,    // max_tool_result_chars: inherit from parent config in future
+                0,    // context_token_budget: 0 = disabled for subagents
+                None, // shared_budget: TODO thread from parent in future
+                ToolDispatchMode::NativeIfSupported,
             ),
         )
         .await;

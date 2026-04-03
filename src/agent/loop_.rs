@@ -199,6 +199,29 @@ pub fn current_tool_loop_requester_user_id() -> Option<String> {
         .flatten()
 }
 
+/// Tool dispatch strategy selected from `[agent] tool_dispatcher`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolDispatchMode {
+    /// Use native provider tool calls when the provider supports them.
+    NativeIfSupported,
+    /// Force XML tool-call prompting/parsing even if native tools are available.
+    XmlOnly,
+}
+
+impl ToolDispatchMode {
+    pub(crate) fn from_config_value(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("xml") {
+            Self::XmlOnly
+        } else {
+            Self::NativeIfSupported
+        }
+    }
+
+    fn allows_native_tools(self, provider_supports_native_tools: bool) -> bool {
+        matches!(self, Self::NativeIfSupported) && provider_supports_native_tools
+    }
+}
+
 /// Computes the list of MCP tool names that should be excluded for a given turn
 /// based on `tool_filter_groups` and the user message.
 ///
@@ -2197,9 +2220,9 @@ pub(crate) async fn agent_turn(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
-    force_xml_tools: bool,
+    tool_dispatch_mode: ToolDispatchMode,
 ) -> Result<String> {
-    run_tool_call_loop(
+    run_tool_call_loop_with_dispatch_mode(
         provider,
         history,
         tools_registry,
@@ -2224,7 +2247,7 @@ pub(crate) async fn agent_turn(
         0,    // max_tool_result_chars: 0 = disabled (legacy callers)
         0,    // context_token_budget: 0 = disabled (legacy callers)
         None, // shared_budget: no shared budget for legacy callers
-        force_xml_tools,
+        tool_dispatch_mode,
     )
     .await
 }
@@ -2363,10 +2386,64 @@ pub(crate) async fn run_tool_call_loop(
     max_tool_result_chars: usize,
     context_token_budget: usize,
     shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
-    // When true, native tool calling is disabled regardless of provider capability.
-    // Respects `[agent] tool_dispatcher = "xml"` in config.toml, forcing the model
-    // to use `<tool_call>` XML format injected via the system prompt instead.
-    force_xml_tools: bool,
+) -> Result<String> {
+    run_tool_call_loop_with_dispatch_mode(
+        provider,
+        history,
+        tools_registry,
+        observer,
+        provider_name,
+        model,
+        temperature,
+        silent,
+        approval,
+        channel_name,
+        channel_reply_target,
+        multimodal_config,
+        max_tool_iterations,
+        cancellation_token,
+        on_delta,
+        hooks,
+        excluded_tools,
+        dedup_exempt_tools,
+        activated_tools,
+        model_switch_callback,
+        pacing,
+        max_tool_result_chars,
+        context_token_budget,
+        shared_budget,
+        ToolDispatchMode::NativeIfSupported,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_tool_call_loop_with_dispatch_mode(
+    provider: &dyn Provider,
+    history: &mut Vec<ChatMessage>,
+    tools_registry: &[Box<dyn Tool>],
+    observer: &dyn Observer,
+    provider_name: &str,
+    model: &str,
+    temperature: f64,
+    silent: bool,
+    approval: Option<&ApprovalManager>,
+    channel_name: &str,
+    channel_reply_target: Option<&str>,
+    multimodal_config: &crate::config::MultimodalConfig,
+    max_tool_iterations: usize,
+    cancellation_token: Option<CancellationToken>,
+    on_delta: Option<tokio::sync::mpsc::Sender<DraftEvent>>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
+    dedup_exempt_tools: &[String],
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    model_switch_callback: Option<ModelSwitchCallback>,
+    pacing: &crate::config::PacingConfig,
+    max_tool_result_chars: usize,
+    context_token_budget: usize,
+    shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    tool_dispatch_mode: ToolDispatchMode,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2484,8 +2561,9 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
         }
-        let use_native_tools =
-            !force_xml_tools && provider.supports_native_tools() && !tool_specs.is_empty();
+        let use_native_tools = tool_dispatch_mode
+            .allows_native_tools(provider.supports_native_tools())
+            && !tool_specs.is_empty();
 
         let (max_images, _) = multimodal_config.effective_limits();
         let trimmed_images = crate::agent::history::trim_history_images(history, max_images);
@@ -3940,10 +4018,8 @@ pub async fn run(
     } else {
         None
     };
-    // Respect [agent] tool_dispatcher = "xml" in config: force XML-based tool
-    // calling even when the provider reports native tool support.
-    let force_xml_tools = config.agent.tool_dispatcher == "xml";
-    let native_tools = !force_xml_tools && provider.supports_native_tools();
+    let tool_dispatch_mode = ToolDispatchMode::from_config_value(&config.agent.tool_dispatcher);
+    let native_tools = tool_dispatch_mode.allows_native_tools(provider.supports_native_tools());
     let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
         &config.workspace_dir,
         &model_name,
@@ -4099,7 +4175,7 @@ pub async fn run(
         loop {
             match scope_thread_id(
                 run_reply_target.clone(),
-                run_tool_call_loop(
+                run_tool_call_loop_with_dispatch_mode(
                     provider.as_ref(),
                     &mut history,
                     &tools_registry,
@@ -4124,7 +4200,7 @@ pub async fn run(
                     config.agent.max_tool_result_chars,
                     config.agent.max_context_tokens,
                     None, // shared_budget
-                    force_xml_tools,
+                    tool_dispatch_mode,
                 ),
             )
             .await
@@ -4409,7 +4485,7 @@ pub async fn run(
             let response = loop {
                 match scope_thread_id(
                     run_reply_target.clone(),
-                    run_tool_call_loop(
+                    run_tool_call_loop_with_dispatch_mode(
                         provider.as_ref(),
                         &mut history,
                         &tools_registry,
@@ -4434,7 +4510,7 @@ pub async fn run(
                         config.agent.max_tool_result_chars,
                         config.agent.max_context_tokens,
                         None, // shared_budget
-                        force_xml_tools,
+                        tool_dispatch_mode,
                     ),
                 )
                 .await
@@ -4842,12 +4918,8 @@ pub async fn process_message(
     } else {
         None
     };
-    // Respect [agent] tool_dispatcher = "xml" in config: force XML-based tool
-    // calling even when the provider reports native tool support. This is needed
-    // for models that accept tool specs but output raw JSON text instead of proper
-    // native function calls (e.g. some models via OpenRouter or Venice).
-    let force_xml_tools = config.agent.tool_dispatcher == "xml";
-    let native_tools = !force_xml_tools && provider.supports_native_tools();
+    let tool_dispatch_mode = ToolDispatchMode::from_config_value(&config.agent.tool_dispatcher);
+    let native_tools = tool_dispatch_mode.allows_native_tools(provider.supports_native_tools());
     let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
         &config.workspace_dir,
         &model_name,
@@ -4945,7 +5017,7 @@ pub async fn process_message(
         &config.agent.tool_call_dedup_exempt,
         activated_handle_pm.as_ref(),
         None,
-        force_xml_tools,
+        tool_dispatch_mode,
     )
     .await
 }
@@ -5955,7 +6027,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -6011,7 +6082,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("oversized payload must fail");
@@ -6061,7 +6131,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("valid multimodal payload should pass");
@@ -6110,7 +6179,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("should fail without vision_provider config");
@@ -6166,7 +6234,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("should fail when vision provider cannot be created");
@@ -6222,7 +6289,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("text-only messages should succeed with default provider");
@@ -6279,7 +6345,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("should fail due to nonexistent vision provider");
@@ -6334,7 +6399,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("empty image markers should not trigger vision routing");
@@ -6389,7 +6453,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect_err("should attempt vision provider creation for multiple images");
@@ -6527,7 +6590,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("parallel execution should complete");
@@ -6602,7 +6664,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("cron_add delivery defaults should be injected");
@@ -6669,7 +6730,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("explicit delivery mode should be preserved");
@@ -6731,7 +6791,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -6805,7 +6864,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("non-interactive shell should succeed for low-risk command");
@@ -6870,7 +6928,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("loop should finish with exempt tool executing twice");
@@ -6955,7 +7012,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("loop should complete");
@@ -7017,7 +7073,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("native fallback id flow should complete");
@@ -7103,7 +7158,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("native tool-call text should be relayed through on_delta");
@@ -7173,7 +7227,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("streaming provider should complete");
@@ -7245,7 +7298,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("streaming tool loop should execute tool and finish");
@@ -7321,7 +7373,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("native streaming events should preserve tool loop semantics");
@@ -7406,7 +7457,6 @@ mod tests {
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("routed streaming provider should complete");
@@ -7493,7 +7543,7 @@ mod tests {
                 &[],
                 Some(&activated),
                 None,
-                false, // force_xml_tools
+                ToolDispatchMode::NativeIfSupported,
             )
             .await
             .expect("wrapper path should execute activated tools");
@@ -9455,7 +9505,6 @@ Let me check the result."#;
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("tool loop should complete");
@@ -9613,7 +9662,6 @@ Let me check the result."#;
                     0,
                     0,
                     None,
-                    false, // force_xml_tools
                 ),
             )
             .await
@@ -9696,7 +9744,6 @@ Let me check the result."#;
                     0,
                     0,
                     None,
-                    false, // force_xml_tools
                 ),
             )
             .await
@@ -9755,7 +9802,6 @@ Let me check the result."#;
             0,
             0,
             None,
-            false, // force_xml_tools
         )
         .await
         .expect("should succeed without cost scope");

@@ -107,8 +107,9 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
-    build_tool_instructions, clear_model_switch_request, get_model_switch_state,
-    is_model_switch_requested, run_tool_call_loop, scope_thread_and_requester_ids,
+    ToolDispatchMode, build_tool_instructions, clear_model_switch_request,
+    get_model_switch_state, is_model_switch_requested,
+    run_tool_call_loop_with_dispatch_mode, scope_thread_and_requester_ids,
     scrub_credentials,
 };
 use crate::approval::ApprovalManager;
@@ -3005,7 +3006,7 @@ async fn process_channel_message(
                         Some(msg.sender.clone()),
                         crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT.scope(
                             cost_tracking_context.clone(),
-                        run_tool_call_loop(
+                        run_tool_call_loop_with_dispatch_mode(
                         active_provider.as_ref(),
                         &mut history,
                         ctx.tools_registry.as_ref(),
@@ -3036,7 +3037,9 @@ async fn process_channel_message(
                         ctx.max_tool_result_chars,
                         ctx.context_token_budget,
                         None, // shared_budget
-                        ctx.prompt_config.agent.tool_dispatcher == "xml", // force_xml_tools
+                        ToolDispatchMode::from_config_value(
+                            &ctx.prompt_config.agent.tool_dispatcher,
+                        ),
                     ),
                     ),
                     ),
