@@ -5875,6 +5875,10 @@ pub struct CronJobDecl {
     /// Allowlist of tool names for agent jobs.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Discord user allowed to approve this job's tool prompts.
+    /// When omitted, button approvals are rejected fail-closed.
+    #[serde(default)]
+    pub approval_requester_user_id: Option<String>,
     /// Session target: `"isolated"` (default) or `"main"`.
     #[serde(default)]
     pub session_target: Option<String>,
@@ -11042,6 +11046,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
+    #[cfg(unix)]
     use tempfile::TempDir;
     use tokio::sync::{Mutex, MutexGuard};
     use tokio::test;

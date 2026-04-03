@@ -923,7 +923,7 @@ fn approval_interaction_is_from_requester(
     pending
         .requester_user_id
         .as_deref()
-        .is_none_or(|requester| requester == user_id)
+        .is_some_and(|requester| requester == user_id)
 }
 
 async fn send_interaction_callback(
@@ -2059,14 +2059,14 @@ mod tests {
     }
 
     #[test]
-    fn approval_interaction_is_from_requester_allows_unbound_legacy_prompt() {
+    fn approval_interaction_is_from_requester_rejects_unbound_legacy_prompt() {
         let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
         let pending = crate::approval::PendingApproval {
             requester_user_id: None,
             response_tx,
         };
 
-        assert!(approval_interaction_is_from_requester(&pending, "alice"));
+        assert!(!approval_interaction_is_from_requester(&pending, "alice"));
     }
 
     #[test]

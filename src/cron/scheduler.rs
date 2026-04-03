@@ -57,6 +57,7 @@ pub async fn run(config: Config, event_tx: EventBroadcast) -> Result<()> {
             enabled: true,
             model: None,
             allowed_tools: None,
+            approval_requester_user_id: None,
             session_target: None,
             delivery: None,
         };

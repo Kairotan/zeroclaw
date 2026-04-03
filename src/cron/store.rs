@@ -658,6 +658,7 @@ pub fn sync_declarative_jobs(
             validate_delivery_config(Some(&delivery))?;
             let delivery_json = serde_json::to_string(&delivery)?;
             let allowed_tools_json = encode_allowed_tools(decl.allowed_tools.as_ref())?;
+            let approval_requester_user_id = decl.approval_requester_user_id.clone();
             let command = decl.command.as_deref().unwrap_or("");
             let delete_after_run = matches!(decl.schedule, CronScheduleDecl::At { .. });
 
@@ -686,8 +687,38 @@ pub fn sync_declarative_jobs(
                          SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4,
                              prompt = ?5, name = ?6, session_target = ?7, model = ?8,
                              enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                             allowed_tools = ?12, approval_requester_user_id = NULL,
-                             source = 'declarative', next_run = ?13
+                             allowed_tools = ?12, approval_requester_user_id = ?13,
+                             source = 'declarative', next_run = ?14
+                         WHERE id = ?15",
+                        params![
+                            expression,
+                            command,
+                            schedule_json,
+                            job_type,
+                            decl.prompt,
+                            decl.name,
+                            session_target,
+                            decl.model,
+                            if decl.enabled { 1 } else { 0 },
+                            delivery_json,
+                            if delete_after_run { 1 } else { 0 },
+                            allowed_tools_json,
+                            approval_requester_user_id,
+                            next_run.to_rfc3339(),
+                            decl.id,
+                        ],
+                    )
+                    .with_context(|| {
+                        format!("Failed to update declarative cron job '{}'", decl.id)
+                    })?;
+                } else {
+                    conn.execute(
+                        "UPDATE cron_jobs
+                         SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4,
+                             prompt = ?5, name = ?6, session_target = ?7, model = ?8,
+                             enabled = ?9, delivery = ?10, delete_after_run = ?11,
+                             allowed_tools = ?12, approval_requester_user_id = ?13,
+                             source = 'declarative'
                          WHERE id = ?14",
                         params![
                             expression,
@@ -702,35 +733,7 @@ pub fn sync_declarative_jobs(
                             delivery_json,
                             if delete_after_run { 1 } else { 0 },
                             allowed_tools_json,
-                            next_run.to_rfc3339(),
-                            decl.id,
-                        ],
-                    )
-                    .with_context(|| {
-                        format!("Failed to update declarative cron job '{}'", decl.id)
-                    })?;
-                } else {
-                    conn.execute(
-                        "UPDATE cron_jobs
-                         SET expression = ?1, command = ?2, schedule = ?3, job_type = ?4,
-                             prompt = ?5, name = ?6, session_target = ?7, model = ?8,
-                             enabled = ?9, delivery = ?10, delete_after_run = ?11,
-                             allowed_tools = ?12, approval_requester_user_id = NULL,
-                             source = 'declarative'
-                         WHERE id = ?13",
-                        params![
-                            expression,
-                            command,
-                            schedule_json,
-                            job_type,
-                            decl.prompt,
-                            decl.name,
-                            session_target,
-                            decl.model,
-                            if decl.enabled { 1 } else { 0 },
-                            delivery_json,
-                            if delete_after_run { 1 } else { 0 },
-                            allowed_tools_json,
+                            approval_requester_user_id,
                             decl.id,
                         ],
                     )
@@ -748,7 +751,7 @@ pub fn sync_declarative_jobs(
                         id, expression, command, schedule, job_type, prompt, name,
                         session_target, model, enabled, delivery, delete_after_run,
                         allowed_tools, source, approval_requester_user_id, created_at, next_run
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'declarative', NULL, ?14, ?15)",
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'declarative', ?14, ?15, ?16)",
                     params![
                         decl.id,
                         expression,
@@ -763,6 +766,7 @@ pub fn sync_declarative_jobs(
                         delivery_json,
                         if delete_after_run { 1 } else { 0 },
                         allowed_tools_json,
+                        approval_requester_user_id,
                         now.to_rfc3339(),
                         next_run.to_rfc3339(),
                     ],
@@ -1516,6 +1520,7 @@ mod tests {
             enabled: true,
             model: None,
             allowed_tools: None,
+            approval_requester_user_id: None,
             session_target: None,
             delivery: None,
         }
@@ -1535,6 +1540,7 @@ mod tests {
             enabled: true,
             model: None,
             allowed_tools: None,
+            approval_requester_user_id: None,
             session_target: None,
             delivery: None,
         }
@@ -1675,6 +1681,23 @@ mod tests {
     }
 
     #[test]
+    fn sync_agent_job_persists_approval_requester_user_id() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp);
+
+        let mut decl = make_agent_decl("owned-agent", "*/15 * * * *", "check health");
+        decl.approval_requester_user_id = Some("discord-user-123".to_string());
+
+        sync_declarative_jobs(&config, &[decl]).unwrap();
+
+        let job = get_job(&config, "owned-agent").unwrap();
+        assert_eq!(
+            job.approval_requester_user_id.as_deref(),
+            Some("discord-user-123")
+        );
+    }
+
+    #[test]
     fn sync_every_schedule_works() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp);
@@ -1689,6 +1712,7 @@ mod tests {
             enabled: true,
             model: None,
             allowed_tools: None,
+            approval_requester_user_id: None,
             session_target: None,
             delivery: None,
         };
