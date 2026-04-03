@@ -126,6 +126,36 @@ impl Provider for FailingProvider {
     }
 }
 
+struct CapturingProvider {
+    requests: Arc<Mutex<Vec<Vec<ChatMessage>>>>,
+}
+
+#[async_trait]
+impl Provider for CapturingProvider {
+    async fn chat_with_system(
+        &self,
+        _system_prompt: Option<&str>,
+        _message: &str,
+        _model: &str,
+        _temperature: f64,
+    ) -> Result<String> {
+        Ok("fallback".into())
+    }
+
+    async fn chat(
+        &self,
+        request: ChatRequest<'_>,
+        _model: &str,
+        _temperature: f64,
+    ) -> Result<ChatResponse> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(request.messages.to_vec());
+        Ok(text_response("vision-ok"))
+    }
+}
+
 /// A simple echo tool that returns its arguments as output.
 struct EchoTool;
 
@@ -355,6 +385,43 @@ fn xml_tool_response(name: &str, args: &str) -> ChatResponse {
         usage: None,
         reasoning_content: None,
     }
+}
+
+#[tokio::test]
+async fn turn_normalizes_local_image_markers_before_provider_call() {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/test_photo.jpg");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Box::new(CapturingProvider {
+        requests: Arc::clone(&requests),
+    });
+    let mut agent = build_agent_with(provider, vec![], Box::new(NativeToolDispatcher));
+
+    let response = agent
+        .turn(&format!("describe [IMAGE:{}]", fixture.display()))
+        .await
+        .expect("turn should succeed with local image marker");
+
+    assert_eq!(response, "vision-ok");
+    let captured = requests.lock().unwrap();
+    let request = captured
+        .last()
+        .expect("provider should receive one request");
+    let user_message = request
+        .iter()
+        .rfind(|message| message.role == "user")
+        .expect("request should include a user message");
+    let (_, image_refs) = crate::multimodal::parse_image_markers(&user_message.content);
+    assert_eq!(image_refs.len(), 1);
+    assert!(
+        image_refs[0].starts_with("data:image/jpeg;base64,"),
+        "expected a normalized data URI, got: {}",
+        image_refs[0]
+    );
+    assert!(
+        !image_refs[0].contains("tests/fixtures/test_photo.jpg"),
+        "provider request must not contain raw local paths"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

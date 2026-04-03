@@ -2093,6 +2093,19 @@ impl AssistantChannelOutcome {
     }
 }
 
+fn render_reply_intent_turn_content(content: &str) -> String {
+    let (cleaned, image_refs) = crate::multimodal::parse_image_markers(content);
+    if image_refs.is_empty() {
+        return content.to_string();
+    }
+
+    if cleaned.is_empty() {
+        "[media attachment]".to_string()
+    } else {
+        format!("{cleaned}\n[media attachment]")
+    }
+}
+
 async fn classify_channel_reply_intent(
     provider: &dyn Provider,
     system_prompt: &str,
@@ -2114,7 +2127,8 @@ async fn classify_channel_reply_intent(
             "assistant" => "assistant",
             _ => "user",
         };
-        let _ = writeln!(convo, "[{role}] {}", msg.content);
+        let content = render_reply_intent_turn_content(&msg.content);
+        let _ = writeln!(convo, "[{role}] {content}");
     }
 
     let response = provider
@@ -6547,6 +6561,24 @@ mod tests {
             _temperature: f64,
         ) -> anyhow::Result<String> {
             Ok("NO_REPLY: not addressed to agent".to_string())
+        }
+    }
+
+    struct ReplyIntentCaptureProvider {
+        prompt: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for ReplyIntentCaptureProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            *self.prompt.lock().expect("prompt lock") = message.to_string();
+            Ok("REPLY".to_string())
         }
     }
 
@@ -11162,6 +11194,48 @@ This is an example JSON object for profile settings."#;
                 .unwrap_or_else(|e| e.into_inner())
                 .as_slice(),
             &["gpt-4-vision".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn classify_channel_reply_intent_strips_local_image_paths_from_prompt() {
+        let prompt = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let provider = ReplyIntentCaptureProvider {
+            prompt: std::sync::Arc::clone(&prompt),
+        };
+        let history = vec![
+            ChatMessage::system("You are a helpful assistant."),
+            ChatMessage::user(
+                "[IMAGE:/home/ssm-user/.zeroclaw/workspace/discord_files/photo.jpg]\n\nwhat is this?",
+            ),
+            ChatMessage::assistant("Looks like a screenshot."),
+            ChatMessage::user("thanks"),
+        ];
+
+        let outcome = classify_channel_reply_intent(
+            &provider,
+            "You are a helpful assistant.",
+            &history,
+            "test-model",
+            0.0,
+        )
+        .await
+        .expect("reply intent classification should succeed");
+
+        assert!(matches!(outcome, AssistantChannelOutcome::Reply(_)));
+        let captured = prompt.lock().expect("prompt lock").clone();
+        assert!(
+            !captured
+                .contains("[IMAGE:/home/ssm-user/.zeroclaw/workspace/discord_files/photo.jpg]"),
+            "reply-intent prompt must not expose raw local image paths: {captured}"
+        );
+        assert!(
+            captured.contains("what is this?"),
+            "reply-intent prompt should preserve caption text: {captured}"
+        );
+        assert!(
+            captured.contains("[media attachment]"),
+            "reply-intent prompt should retain a media placeholder: {captured}"
         );
     }
 

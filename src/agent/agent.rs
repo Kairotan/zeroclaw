@@ -6,6 +6,7 @@ use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::Config;
 use crate::i18n::ToolDescriptions;
 use crate::memory::{self, Memory, MemoryCategory};
+use crate::multimodal;
 use crate::observability::{self, Observer, ObserverEvent};
 use crate::providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use crate::runtime;
@@ -57,6 +58,7 @@ pub struct Agent {
     memory_session_id: Option<String>,
     history: Vec<ConversationMessage>,
     classification_config: crate::config::QueryClassificationConfig,
+    multimodal_config: crate::config::MultimodalConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
     allowed_tools: Option<Vec<String>>,
@@ -91,6 +93,7 @@ pub struct AgentBuilder {
     auto_save: Option<bool>,
     memory_session_id: Option<String>,
     classification_config: Option<crate::config::QueryClassificationConfig>,
+    multimodal_config: Option<crate::config::MultimodalConfig>,
     available_hints: Option<Vec<String>>,
     route_model_by_hint: Option<HashMap<String, String>>,
     allowed_tools: Option<Vec<String>>,
@@ -121,6 +124,7 @@ impl AgentBuilder {
             auto_save: None,
             memory_session_id: None,
             classification_config: None,
+            multimodal_config: None,
             available_hints: None,
             route_model_by_hint: None,
             allowed_tools: None,
@@ -223,6 +227,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn multimodal_config(mut self, multimodal_config: crate::config::MultimodalConfig) -> Self {
+        self.multimodal_config = Some(multimodal_config);
+        self
+    }
+
     pub fn available_hints(mut self, available_hints: Vec<String>) -> Self {
         self.available_hints = Some(available_hints);
         self
@@ -315,6 +324,7 @@ impl AgentBuilder {
             memory_session_id: self.memory_session_id,
             history: Vec::new(),
             classification_config: self.classification_config.unwrap_or_default(),
+            multimodal_config: self.multimodal_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             allowed_tools: allowed,
@@ -544,6 +554,7 @@ impl Agent {
             .temperature(config.default_temperature)
             .workspace_dir(config.workspace_dir.clone())
             .classification_config(config.query_classification.clone())
+            .multimodal_config(config.multimodal.clone())
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
             .identity_config(config.identity.clone())
@@ -780,16 +791,21 @@ impl Agent {
 
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let prepared_messages =
+                multimodal::prepare_messages_for_provider(&messages, &self.multimodal_config)
+                    .await?;
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
             let cache_key = if self.temperature == 0.0 {
                 self.response_cache.as_ref().map(|_| {
-                    let last_user = messages
+                    let last_user = prepared_messages
+                        .messages
                         .iter()
                         .rfind(|m| m.role == "user")
                         .map(|m| m.content.as_str())
                         .unwrap_or("");
-                    let system = messages
+                    let system = prepared_messages
+                        .messages
                         .iter()
                         .find(|m| m.role == "system")
                         .map(|m| m.content.as_str());
@@ -825,7 +841,7 @@ impl Agent {
                 .provider
                 .chat(
                     ChatRequest {
-                        messages: &messages,
+                        messages: &prepared_messages.messages,
                         tools: if self.tool_dispatcher.should_send_tool_specs() {
                             Some(&self.tool_specs)
                         } else {
@@ -955,16 +971,21 @@ impl Agent {
         // ── Turn loop ──────────────────────────────────────────────────
         for _ in 0..self.config.max_tool_iterations {
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let prepared_messages =
+                multimodal::prepare_messages_for_provider(&messages, &self.multimodal_config)
+                    .await?;
 
             // Response cache check (same as turn)
             let cache_key = if self.temperature == 0.0 {
                 self.response_cache.as_ref().map(|_| {
-                    let last_user = messages
+                    let last_user = prepared_messages
+                        .messages
                         .iter()
                         .rfind(|m| m.role == "user")
                         .map(|m| m.content.as_str())
                         .unwrap_or("");
-                    let system = messages
+                    let system = prepared_messages
+                        .messages
                         .iter()
                         .find(|m| m.role == "system")
                         .map(|m| m.content.as_str());
@@ -1004,7 +1025,7 @@ impl Agent {
             let stream_opts = crate::providers::traits::StreamOptions::new(true);
             let mut stream = self.provider.stream_chat(
                 crate::providers::ChatRequest {
-                    messages: &messages,
+                    messages: &prepared_messages.messages,
                     tools: if self.tool_dispatcher.should_send_tool_specs() {
                         Some(&self.tool_specs)
                     } else {
@@ -1090,7 +1111,7 @@ impl Agent {
                     .provider
                     .chat(
                         ChatRequest {
-                            messages: &messages,
+                            messages: &prepared_messages.messages,
                             tools: if self.tool_dispatcher.should_send_tool_specs() {
                                 Some(&self.tool_specs)
                             } else {
