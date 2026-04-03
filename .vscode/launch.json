@@ -26,7 +26,6 @@
       "program": "${workspaceFolder}/target/debug/zeroclaw",
       "args": ["gateway"],
       "cwd": "${workspaceFolder}",
-      "env": { "ZEROCLAW_REQUIRE_PAIRING": "false" },
       "preLaunchTask": "Build: Debug"
     },
     {

@@ -2452,10 +2452,10 @@ impl Default for BrowserComputerUseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BrowserConfig {
     /// Enable `browser_open` tool (opens URLs in the system browser without scraping)
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     /// Allowed domains for `browser_open` (exact or subdomain match)
-    #[serde(default = "default_browser_allowed_domains")]
+    #[serde(default)]
     pub allowed_domains: Vec<String>,
     /// Browser session name (for agent-browser automation)
     #[serde(default)]
@@ -2477,10 +2477,6 @@ pub struct BrowserConfig {
     pub computer_use: BrowserComputerUseConfig,
 }
 
-fn default_browser_allowed_domains() -> Vec<String> {
-    vec!["*".into()]
-}
-
 fn default_browser_backend() -> String {
     "agent_browser".into()
 }
@@ -2492,8 +2488,8 @@ fn default_browser_webdriver_url() -> String {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            allowed_domains: vec!["*".into()],
+            enabled: false,
+            allowed_domains: Vec::new(),
             session_name: None,
             backend: default_browser_backend(),
             native_headless: default_true(),
@@ -2509,8 +2505,7 @@ impl Default for BrowserConfig {
 /// HTTP request tool configuration (`[http_request]` section).
 ///
 /// Domain filtering: `allowed_domains` controls which hosts are reachable (use `["*"]`
-/// for all public hosts, which is the default). If `allowed_domains` is empty, all
-/// requests are rejected.
+/// for all public hosts). If `allowed_domains` is empty, all requests are rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequestConfig {
     /// Enable `http_request` tool for API interactions
@@ -5309,8 +5304,6 @@ fn default_auto_approve() -> Vec<String> {
         "content_search".into(),
         "image_info".into(),
         "weather".into(),
-        "browser".into(),
-        "browser_open".into(),
     ]
 }
 
@@ -11772,6 +11765,14 @@ default_temperature = 0.7
         }
     }
 
+    #[test]
+    async fn auto_approve_defaults_exclude_browser_tools() {
+        let defaults = default_auto_approve();
+
+        assert!(!defaults.iter().any(|tool| tool == "browser"));
+        assert!(!defaults.iter().any(|tool| tool == "browser_open"));
+    }
+
     /// Duplicates are not introduced when ensure_default_auto_approve runs
     /// on a list that already contains the defaults.
     #[test]
@@ -13216,15 +13217,15 @@ default_temperature = 0.7
         assert!(!c.composio.enabled);
         assert!(c.composio.api_key.is_none());
         assert!(c.secrets.encrypt);
-        assert!(c.browser.enabled);
-        assert_eq!(c.browser.allowed_domains, vec!["*".to_string()]);
+        assert!(!c.browser.enabled);
+        assert!(c.browser.allowed_domains.is_empty());
     }
 
     #[test]
-    async fn browser_config_default_enabled() {
+    async fn browser_config_default_disabled_and_deny_by_default() {
         let b = BrowserConfig::default();
-        assert!(b.enabled);
-        assert_eq!(b.allowed_domains, vec!["*".to_string()]);
+        assert!(!b.enabled);
+        assert!(b.allowed_domains.is_empty());
         assert_eq!(b.backend, "agent_browser");
         assert!(b.native_headless);
         assert_eq!(b.native_webdriver_url, "http://127.0.0.1:9515");
@@ -13289,8 +13290,8 @@ config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
-        assert!(parsed.browser.enabled);
-        assert_eq!(parsed.browser.allowed_domains, vec!["*".to_string()]);
+        assert!(!parsed.browser.enabled);
+        assert!(parsed.browser.allowed_domains.is_empty());
     }
 
     // ── Environment variable overrides (Docker support) ─────────
