@@ -8,16 +8,16 @@
 //! # Composition order (outermost first)
 //!
 //! ```text
-//! RateLimitedTool
-//!   └─ PathGuardedTool
+//! PathGuardedTool
+//!   └─ RateLimitedTool
 //!        └─ <concrete tool>
 //! ```
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! let tool = RateLimitedTool::new(
-//!     PathGuardedTool::new(ShellTool::new(security.clone(), runtime), security.clone()),
+//! let tool = PathGuardedTool::new(
+//!     RateLimitedTool::new(ShellTool::new(security.clone(), runtime), security.clone()),
 //!     security.clone(),
 //! );
 //! ```
@@ -195,6 +195,14 @@ mod tests {
         })
     }
 
+    fn forbidden_shell_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "type C:\\Windows\\win.ini"
+        } else {
+            "cat /etc/passwd"
+        }
+    }
+
     /// A minimal tool that records how many times `execute` was called.
     struct CountingTool {
         calls: Arc<AtomicUsize>,
@@ -261,6 +269,7 @@ mod tests {
         // Use a policy with a tiny action budget (1 action per window).
         let sec = Arc::new(SecurityPolicy {
             autonomy: AutonomyLevel::Full,
+            allowed_commands: vec!["cat".into(), "echo".into(), "type".into()],
             workspace_dir: std::env::temp_dir(),
             max_actions_per_hour: 1,
             ..SecurityPolicy::default()
@@ -344,18 +353,29 @@ mod tests {
 
     #[tokio::test]
     async fn composed_wrappers_both_enforce() {
-        // RateLimited(PathGuarded(CountingTool)) — path check happens inside
-        // the rate-limit window, so a forbidden path must still be blocked
-        // (and not consume a rate-limit slot).
-        let sec = policy(AutonomyLevel::Full);
+        // PathGuarded(RateLimited(CountingTool)) checks path policy before
+        // touching action budget, so a denied path leaves one allowed call.
+        let sec = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Full,
+            workspace_dir: std::env::temp_dir(),
+            max_actions_per_hour: 1,
+            ..SecurityPolicy::default()
+        });
         let (inner, counter) = CountingTool::new();
-        let tool = RateLimitedTool::new(PathGuardedTool::new(inner, sec.clone()), sec);
+        let tool = PathGuardedTool::new(RateLimitedTool::new(inner, sec.clone()), sec);
 
         let blocked = tool
-            .execute(serde_json::json!({"path": "/etc/passwd"}))
+            .execute(serde_json::json!({"command": forbidden_shell_command()}))
             .await
             .unwrap();
         assert!(!blocked.success);
         assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        let allowed = tool
+            .execute(serde_json::json!({"command": "echo still-has-budget"}))
+            .await
+            .unwrap();
+        assert!(allowed.success, "path denial must not consume action budget");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }

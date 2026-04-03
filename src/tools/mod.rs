@@ -293,8 +293,8 @@ pub fn default_tools_with_runtime(
     runtime: Arc<dyn RuntimeAdapter>,
 ) -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(RateLimitedTool::new(
-            PathGuardedTool::new(ShellTool::new(security.clone(), runtime), security.clone()),
+        Box::new(PathGuardedTool::new(
+            RateLimitedTool::new(ShellTool::new(security.clone(), runtime), security.clone()),
             security.clone(),
         )),
         Box::new(FileReadTool::new(security.clone())),
@@ -410,8 +410,8 @@ pub fn all_tools_with_runtime(
     let has_shell_access = runtime.has_shell_access();
     let sandbox = create_sandbox(&root_config.security);
     let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
-        Arc::new(RateLimitedTool::new(
-            PathGuardedTool::new(
+        Arc::new(PathGuardedTool::new(
+            RateLimitedTool::new(
                 ShellTool::new_with_sandbox(security.clone(), runtime, sandbox)
                     .with_timeout_secs(root_config.shell_tool.timeout_secs),
                 security.clone(),
