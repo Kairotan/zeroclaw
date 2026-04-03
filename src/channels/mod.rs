@@ -685,37 +685,87 @@ fn build_channel_system_prompt(
 }
 
 fn normalize_cached_channel_turns(turns: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let mut normalized = Vec::with_capacity(turns.len());
-    let mut expecting_user = true;
+    let mut normalized: Vec<ChatMessage> = Vec::with_capacity(turns.len());
+
+    fn append_to_last_turn(normalized: &mut [ChatMessage], content: &str) {
+        let Some(last_turn) = normalized.last_mut() else {
+            return;
+        };
+        if content.is_empty() {
+            return;
+        }
+        if !last_turn.content.is_empty() {
+            last_turn.content.push_str("\n\n");
+        }
+        last_turn.content.push_str(content);
+    }
 
     for turn in turns {
-        match (expecting_user, turn.role.as_str()) {
-            // Pass through tool-role messages preserved by
-            // keep_tool_context_turns (#4827).  After a tool result the
-            // next expected message is an assistant response, same as
-            // after a user message.
-            (_, "tool") | (true, "user") => {
-                normalized.push(turn);
-                expecting_user = false;
+        match turn.role.as_str() {
+            "user" => {
+                // If a crash left a trailing assistant tool-call with no tool
+                // result, drop that orphan before appending the fresh user turn.
+                if normalized.last().is_some_and(|last| {
+                    last.role == "assistant" && is_tool_call_content(&last.content)
+                }) {
+                    normalized.pop();
+                }
+
+                if normalized.last().is_some_and(|last| last.role == "user") {
+                    append_to_last_turn(&mut normalized, &turn.content);
+                } else {
+                    normalized.push(turn);
+                }
             }
-            (false, "assistant") => {
-                normalized.push(turn);
-                expecting_user = true;
-            }
-            // Interrupted channel turns can produce consecutive user messages
-            // (no assistant persisted yet). Merge instead of dropping.
-            (false, "user") | (true, "assistant") => {
-                if let Some(last_turn) = normalized.last_mut() {
-                    if !turn.content.is_empty() {
-                        if !last_turn.content.is_empty() {
-                            last_turn.content.push_str("\n\n");
-                        }
-                        last_turn.content.push_str(&turn.content);
+            "assistant" => {
+                let is_tool_call = is_tool_call_content(&turn.content);
+
+                if normalized.is_empty() {
+                    if !is_tool_call {
+                        normalized.push(turn);
                     }
+                    continue;
+                }
+
+                let last_is_assistant_tool_call = normalized.last().is_some_and(|last| {
+                    last.role == "assistant" && is_tool_call_content(&last.content)
+                });
+                let last_is_assistant_text = normalized.last().is_some_and(|last| {
+                    last.role == "assistant" && !is_tool_call_content(&last.content)
+                });
+                let last_is_turn_boundary = normalized
+                    .last()
+                    .is_some_and(|last| last.role == "user" || last.role == "tool");
+
+                if last_is_assistant_text && !is_tool_call {
+                    append_to_last_turn(&mut normalized, &turn.content);
+                } else if last_is_assistant_tool_call {
+                    normalized.pop();
+                    normalized.push(turn);
+                } else if last_is_turn_boundary {
+                    normalized.push(turn);
+                }
+            }
+            "tool" => {
+                // Keep tool results only when they are attached to a preceding
+                // assistant tool-call or continue an existing tool-result block.
+                if normalized.last().is_some_and(|last| {
+                    (last.role == "assistant" && is_tool_call_content(&last.content))
+                        || last.role == "tool"
+                }) {
+                    normalized.push(turn);
                 }
             }
             _ => {}
         }
+    }
+
+    // Drop a trailing orphan assistant tool-call with no tool result.
+    if normalized
+        .last()
+        .is_some_and(|last| last.role == "assistant" && is_tool_call_content(&last.content))
+    {
+        normalized.pop();
     }
 
     normalized
@@ -10568,6 +10618,44 @@ This is an example JSON object for profile settings."#;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].role, "user");
         assert_eq!(result[0].content, "a\n\nb\n\nc");
+    }
+
+    #[test]
+    fn normalize_preserves_user_turn_after_tool_result() {
+        let turns = vec![
+            ChatMessage::user("run it"),
+            ChatMessage::assistant(
+                r#"{"tool_calls":[{"id":"call_1","name":"shell","arguments":"{}"}]}"#,
+            ),
+            ChatMessage::tool(r#"{"tool_call_id":"call_1","content":"ok"}"#),
+            ChatMessage::user("next question"),
+        ];
+
+        let result = normalize_cached_channel_turns(turns);
+
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[2].role, "tool");
+        assert_eq!(result[3].role, "user");
+        assert_eq!(result[3].content, "next question");
+    }
+
+    #[test]
+    fn normalize_drops_orphan_leading_tool_result() {
+        let turns = vec![
+            ChatMessage::tool(r#"{"tool_call_id":"call_1","content":"stale"}"#),
+            ChatMessage::user("fresh question"),
+            ChatMessage::assistant("fresh answer"),
+        ];
+
+        let result = normalize_cached_channel_turns(turns);
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].role, "user");
+        assert_eq!(result[0].content, "fresh question");
+        assert_eq!(result[1].role, "assistant");
+        assert_eq!(result[1].content, "fresh answer");
     }
 
     #[test]
