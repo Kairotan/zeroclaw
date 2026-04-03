@@ -375,7 +375,10 @@ mod tests {
             .execute(serde_json::json!({"command": "echo still-has-budget"}))
             .await
             .unwrap();
-        assert!(allowed.success, "path denial must not consume action budget");
+        assert!(
+            allowed.success,
+            "path denial must not consume action budget"
+        );
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }

@@ -2719,8 +2719,17 @@ mod tests {
 
         let result = process_attachments(&attachments, &client, Some(temp.path())).await;
 
-        assert_eq!(result, format!("[IMAGE:{}]", attachments[0]["url"].as_str().unwrap()));
-        assert!(!temp.path().join("discord_files").join("missing.png").exists());
+        assert_eq!(
+            result,
+            format!("[IMAGE:{}]", attachments[0]["url"].as_str().unwrap())
+        );
+        assert!(
+            !temp
+                .path()
+                .join("discord_files")
+                .join("missing.png")
+                .exists()
+        );
     }
 
     #[test]

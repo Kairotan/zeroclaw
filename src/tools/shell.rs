@@ -801,7 +801,10 @@ mod tests {
             .execute(json!({"command": "echo still-has-budget"}))
             .await
             .expect("safe command should still have budget after path denial");
-        assert!(allowed.success, "path denial must not consume action budget");
+        assert!(
+            allowed.success,
+            "path denial must not consume action budget"
+        );
         assert!(allowed.output.contains("still-has-budget"));
     }
 

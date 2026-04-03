@@ -107,10 +107,9 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{
-    ToolDispatchMode, build_tool_instructions, clear_model_switch_request,
-    get_model_switch_state, is_model_switch_requested,
-    run_tool_call_loop_with_dispatch_mode, scope_thread_and_requester_ids,
-    scrub_credentials,
+    ToolDispatchMode, build_tool_instructions, clear_model_switch_request, get_model_switch_state,
+    is_model_switch_requested, run_tool_call_loop_with_dispatch_mode,
+    scope_thread_and_requester_ids, scrub_credentials,
 };
 use crate::approval::ApprovalManager;
 use crate::config::Config;

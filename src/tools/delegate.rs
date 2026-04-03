@@ -1286,10 +1286,10 @@ impl Observer for NoopObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{MemoryCategory, SqliteMemory};
     use crate::config::schema::{
         DEFAULT_DELEGATE_AGENTIC_TIMEOUT_SECS, DEFAULT_DELEGATE_TIMEOUT_SECS,
     };
+    use crate::memory::{MemoryCategory, SqliteMemory};
     use crate::providers::{ChatRequest, ChatResponse, ToolCall};
     use crate::security::{AutonomyLevel, SecurityPolicy};
     use anyhow::anyhow;
@@ -1453,8 +1453,8 @@ mod tests {
                     tool_calls: vec![ToolCall {
                         id: "call_mem".to_string(),
                         name: "memory_store".to_string(),
-                        arguments:
-                            "{\"key\":\"delegated_fact\",\"content\":\"scoped value\"}".to_string(),
+                        arguments: "{\"key\":\"delegated_fact\",\"content\":\"scoped value\"}"
+                            .to_string(),
                     }],
                     usage: None,
                     reasoning_content: None,
@@ -1988,21 +1988,17 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let memory = Arc::new(SqliteMemory::new(tmp.path()).unwrap()) as Arc<dyn Memory>;
         memory
-            .store(
-                "parent_fact",
-                "parent value",
-                MemoryCategory::Core,
-                None,
-            )
+            .store("parent_fact", "parent value", MemoryCategory::Core, None)
             .await
             .unwrap();
 
         let mut config = agentic_config(vec!["memory_store".to_string()], 4);
         config.memory_namespace = Some("delegate_agent_ns".to_string());
 
-        let parent_tools = Arc::new(RwLock::new(vec![
-            Arc::new(MemoryStoreTool::new(memory.clone(), test_security())) as Arc<dyn Tool>
-        ]));
+        let parent_tools = Arc::new(RwLock::new(vec![Arc::new(MemoryStoreTool::new(
+            memory.clone(),
+            test_security(),
+        )) as Arc<dyn Tool>]));
         let tool = DelegateTool::new(HashMap::new(), None, test_security())
             .with_parent_tools(parent_tools)
             .with_memory(memory.clone());

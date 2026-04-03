@@ -13,6 +13,8 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use std::io;
+#[cfg(unix)]
+use std::io::IsTerminal;
 
 use crate::config::Config;
 use crate::config::schema::{

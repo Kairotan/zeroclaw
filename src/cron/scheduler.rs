@@ -1519,14 +1519,11 @@ mod tests {
     #[test]
     fn redacted_output_prepends_validated_mention_after_scanning() {
         let leaked_output = "Deployment key: sk_test_FAKE1234567890abcdefgh"; // gitleaks:allow
-        let mention = crate::cron::ValidatedMention::try_new(
-            "discord",
-            "123456789012345678",
-        )
-        .unwrap();
+        let mention =
+            crate::cron::ValidatedMention::try_new("discord", "123456789012345678").unwrap();
 
-        let safe_output = scan_and_redact_output("discord", "999", leaked_output)
-            .prepend_mention(&mention);
+        let safe_output =
+            scan_and_redact_output("discord", "999", leaked_output).prepend_mention(&mention);
 
         assert!(safe_output.as_str().starts_with("<@123456789012345678>\n"));
         assert!(
