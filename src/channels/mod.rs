@@ -1300,9 +1300,17 @@ fn strip_old_tool_context(ctx: &ChannelRuntimeContext, sender_key: &str, keep_tu
 /// rather than a final text response?
 fn is_tool_call_content(content: &str) -> bool {
     let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
     trimmed.contains("<tool_call>")
         || trimmed.starts_with("{\"tool_call\"")
         || trimmed.starts_with("{\"name\"")
+        || serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|value| value.get("tool_calls").and_then(|calls| calls.as_array()).cloned())
+            .is_some_and(|calls| !calls.is_empty())
 }
 
 fn rollback_orphan_user_turn(
@@ -11790,6 +11798,9 @@ This is an example JSON object for profile settings."#;
         assert!(is_tool_call_content("<tool_call>shell</tool_call>"));
         assert!(is_tool_call_content(
             "{\"name\": \"read_file\", \"args\": {}}"
+        ));
+        assert!(is_tool_call_content(
+            "{\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"shell\",\"arguments\":\"{}\"}]}"
         ));
         assert!(!is_tool_call_content("The iPad has been blocked."));
         assert!(!is_tool_call_content(""));
