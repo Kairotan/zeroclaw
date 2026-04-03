@@ -328,4 +328,34 @@ mod tests {
         assert!(JobType::try_from("").is_err());
         assert!(JobType::try_from("unknown").is_err());
     }
+
+    #[test]
+    fn validated_mention_accepts_supported_channel_ids_and_formats_them() {
+        assert_eq!(
+            ValidatedMention::try_new("discord", "123456789012345678")
+                .unwrap()
+                .to_string(),
+            "<@123456789012345678>"
+        );
+        assert_eq!(
+            ValidatedMention::try_new("slack", "U12345678")
+                .unwrap()
+                .to_string(),
+            "<@U12345678>"
+        );
+        assert_eq!(
+            ValidatedMention::try_new("mattermost", "release-bot_1")
+                .unwrap()
+                .to_string(),
+            "@release-bot_1"
+        );
+    }
+
+    #[test]
+    fn validated_mention_rejects_unsupported_or_broad_mentions() {
+        assert!(ValidatedMention::try_new("discord", "@everyone").is_err());
+        assert!(ValidatedMention::try_new("slack", "channel").is_err());
+        assert!(ValidatedMention::try_new("mattermost", "@all").is_err());
+        assert!(ValidatedMention::try_new("telegram", "123456").is_err());
+    }
 }

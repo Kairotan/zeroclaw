@@ -1039,4 +1039,18 @@ mod tests {
         assert_eq!(jobs[0].job_type, JobType::Shell);
         assert_eq!(jobs[0].command, "echo ok");
     }
+
+    #[test]
+    fn validate_delivery_config_rejects_invalid_mention_user() {
+        let err = validate_delivery_config(Some(&DeliveryConfig {
+            mode: "announce".to_string(),
+            channel: Some("discord".to_string()),
+            to: Some("123456789012345678".to_string()),
+            best_effort: true,
+            mention_user: Some("@everyone".to_string()),
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid Discord user ID"));
+    }
 }
