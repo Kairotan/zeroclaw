@@ -6,6 +6,7 @@
 > Để biết hành vi runtime hiện tại, xem [config-reference.md](config-reference.md), [operations-runbook.md](operations-runbook.md), và [troubleshooting.md](troubleshooting.md).
 
 ## Vấn đề
+
 ZeroClaw ghi log các hành động nhưng thiếu audit trail chống giả mạo cho:
 - Ai đã thực thi lệnh nào
 - Khi nào và từ channel nào
@@ -120,10 +121,12 @@ max_size_mb = 100
 rotate = "daily"  # daily | weekly | size
 
 # Chống giả mạo
+
 sign_events = true
 signing_key_path = "~/.config/zeroclaw/audit.key"
 
 # Những gì cần log
+
 log_commands = true
 log_file_access = true
 log_auth_events = true
@@ -136,18 +139,23 @@ log_policy_violations = true
 
 ```bash
 # Hiển thị tất cả lệnh được thực thi bởi @alice
+
 zeroclaw audit --user @alice
 
 # Hiển thị tất cả lệnh rủi ro cao
+
 zeroclaw audit --risk high
 
 # Hiển thị vi phạm trong 24 giờ qua
+
 zeroclaw audit --since 24h --violations-only
 
 # Xuất sang JSON để phân tích
+
 zeroclaw audit --format json --output audit.json
 
 # Xác minh tính toàn vẹn của log
+
 zeroclaw audit --verify-signatures
 ```
 

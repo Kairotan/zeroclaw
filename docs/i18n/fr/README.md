@@ -322,7 +322,6 @@ Tableau de bord web React 19 + Vite 6 + Tailwind CSS 4 servi directement depuis 
 - CI/CD : beta (automatique au push) → stable (dispatch manuel) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Binaires précompilés pour Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configuration
 
 `~/.zeroclaw/config.toml` minimal :

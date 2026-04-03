@@ -52,6 +52,7 @@ Khả năng khả dụng của model có thể thay đổi theo tài khoản/khu
 
 ```bash
 # Test OpenAI-compatible endpoint
+
 curl -X POST "https://api.z.ai/api/coding/paas/v4/chat/completions" \
   -H "Authorization: Bearer YOUR_ZAI_API_KEY" \
   -H "Content-Type: application/json" \
@@ -77,9 +78,11 @@ Phản hồi mong đợi:
 
 ```bash
 # Test agent directly
+
 echo "Hello" | zeroclaw agent
 
 # Check status
+
 zeroclaw status
 ```
 
@@ -89,10 +92,13 @@ Thêm vào file `.env` của bạn:
 
 ```bash
 # Z.AI API Key
+
 ZAI_API_KEY=your-id.secret
 
 # Optional generic key (used by many providers)
+
 # API_KEY=your-id.secret
+
 ```
 
 Định dạng key là `id.secret` (ví dụ: `abc123.xyz789`).

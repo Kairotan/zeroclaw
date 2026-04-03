@@ -30,9 +30,11 @@ Tài liệu này hướng dẫn triển khai ZeroClaw trên Raspberry Pi hoặc 
 
 ```bash
 # Build for RPi (or cross-compile from host)
+
 cargo build --release --features hardware
 
 # Or install via your preferred method
+
 ```
 
 ### 2.3 Cấu hình
@@ -48,6 +50,7 @@ board = "rpi-gpio"
 transport = "native"
 
 # Or Arduino over USB
+
 [[peripherals.boards]]
 board = "arduino-uno"
 transport = "serial"
@@ -180,6 +183,7 @@ Hoặc chạy ngrok thủ công:
 ```bash
 ngrok http 3000
 # Use the HTTPS URL for your webhook
+
 ```
 
 ### 5.3 Cloudflare Tunnel

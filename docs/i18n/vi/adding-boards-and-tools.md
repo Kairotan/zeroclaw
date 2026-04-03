@@ -6,11 +6,13 @@ Hướng dẫn này giải thích cách thêm board phần cứng mới và tool
 
 ```bash
 # Thêm board (cập nhật ~/.zeroclaw/config.toml)
+
 zeroclaw peripheral add nucleo-f401re /dev/ttyACM0
 zeroclaw peripheral add arduino-uno /dev/cu.usbmodem12345
 zeroclaw peripheral add rpi-gpio native   # cho Raspberry Pi GPIO (Linux)
 
 # Khởi động lại daemon để áp dụng
+
 zeroclaw daemon --host 127.0.0.1 --port 3000
 ```
 
@@ -70,6 +72,7 @@ Hoặc dùng định dạng key-value:
 
 ```markdown
 ## Pin Aliases
+
 red_led: 13
 builtin_led: 13
 ```

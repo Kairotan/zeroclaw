@@ -322,7 +322,6 @@ Gateway سے براہ راست فراہم کردہ React 19 + Vite 6 + Tailwind 
 - CI/CD: beta (push پر خودکار) → stable (دستی dispatch) → Docker، crates.io، Scoop، AUR، Homebrew، tweet۔
 - Linux (x86_64، aarch64، armv7)، macOS (x86_64، aarch64)، Windows (x86_64) کے لیے پری بلٹ بائنریز۔
 
-
 ## کنفیگریشن
 
 کم از کم `~/.zeroclaw/config.toml`:

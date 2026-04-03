@@ -2,7 +2,7 @@
 
 This guide introduces multi-model concepts in ZeroClaw, including fallback provider chains, model-level fallbacks, and API key rotation for resilience.
 
-**Last verified: March 28, 2026**
+Last verified: March 28, 2026
 
 ## When to Use Multi-Model Setup
 

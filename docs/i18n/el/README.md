@@ -322,7 +322,6 @@ ls -lh target/release/zeroclaw
 - CI/CD: beta (auto on push) → stable (manual dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Προκατασκευασμένα δυαδικά για Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Ρύθμιση παραμέτρων
 
 Ελάχιστο `~/.zeroclaw/config.toml`:

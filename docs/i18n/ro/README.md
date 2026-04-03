@@ -322,7 +322,6 @@ Panou web React 19 + Vite 6 + Tailwind CSS 4 servit direct din Gateway:
 - CI/CD: beta (automat la push) → stable (dispatch manual) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Binare pre-construite pentru Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configurare
 
 Minimal `~/.zeroclaw/config.toml`:

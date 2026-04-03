@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 webbpanel serverad direkt från Gateway:
 - CI/CD: beta (automatiskt vid push) → stable (manuell dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Förbyggda binärer för Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Konfiguration
 
 Minimal `~/.zeroclaw/config.toml`:

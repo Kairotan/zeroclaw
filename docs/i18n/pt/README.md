@@ -322,7 +322,6 @@ Painel web React 19 + Vite 6 + Tailwind CSS 4 servido diretamente pelo Gateway:
 - CI/CD: beta (automático no push) → stable (dispatch manual) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Binários pré-construídos para Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configuração
 
 `~/.zeroclaw/config.toml` mínimo:

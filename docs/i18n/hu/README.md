@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 webes vezerlopult, amelyet kozvetlenul a Gate
 - CI/CD: beta (auto on push) → stable (manual dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Elore elkeszitett binarisok Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64) rendszerekhez.
 
-
 ## Konfiguracio
 
 Minimalis `~/.zeroclaw/config.toml`:

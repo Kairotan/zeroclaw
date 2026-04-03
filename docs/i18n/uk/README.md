@@ -322,7 +322,6 @@ ls -lh target/release/zeroclaw
 - CI/CD: beta (автоматично при push) → stable (ручний запуск) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Попередньо зібрані бінарні файли для Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Конфігурація
 
 Мінімальний `~/.zeroclaw/config.toml`:

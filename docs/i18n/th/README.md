@@ -322,7 +322,6 @@ Feature-gated: Matrix (`channel-matrix`), Lark (`channel-lark`), Nostr (`channel
 - CI/CD: beta (อัตโนมัติเมื่อ push) → stable (dispatch แบบ manual) → Docker, crates.io, Scoop, AUR, Homebrew, tweet
 - ไบนารี pre-built สำหรับ Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64)
 
-
 ## การกำหนดค่า
 
 ขั้นต่ำ `~/.zeroclaw/config.toml`:

@@ -6,6 +6,7 @@
 > Để biết hành vi runtime hiện tại, xem [config-reference.md](config-reference.md), [operations-runbook.md](operations-runbook.md), và [troubleshooting.md](troubleshooting.md).
 
 ## Câu hỏi cốt lõi: liệu các tính năng bảo mật có làm hỏng...
+
 1. ❓ Quá trình cross-compilation nhanh?
 2. ❓ Kiến trúc pluggable (hoán đổi bất kỳ thành phần nào)?
 3. ❓ Tính agnostic phần cứng (ARM, x86, RISC-V)?
@@ -24,15 +25,18 @@
 default = ["basic-security"]
 
 # Basic security (luôn bật, không tốn overhead)
+
 basic-security = []
 
 # Platform-specific sandboxing (opt-in theo từng nền tảng)
+
 sandbox-landlock = []   # Chỉ Linux
 sandbox-firejail = []  # Chỉ Linux
 sandbox-bubblewrap = []# macOS/Linux
 sandbox-docker = []    # Tất cả nền tảng (nặng)
 
 # Bộ bảo mật đầy đủ (dành cho production build)
+
 security-full = [
     "basic-security",
     "sandbox-landlock",
@@ -41,10 +45,12 @@ security-full = [
 ]
 
 # Resource & audit monitoring
+
 resource-monitoring = []
 audit-logging = []
 
 # Development build (nhanh nhất, không phụ thuộc thêm)
+
 dev = []
 ```
 
@@ -52,18 +58,23 @@ dev = []
 
 ```bash
 # Dev build cực nhanh (không có extras bảo mật)
+
 cargo build --profile dev
 
 # Release build với basic security (mặc định)
+
 cargo build --release
 # → Bao gồm: allowlist, path blocking, injection protection
+
 # → Không bao gồm: Landlock, Firejail, audit logging
 
 # Production build với full security
+
 cargo build --release --features security-full
 # → Bao gồm: Tất cả
 
 # Chỉ sandbox theo nền tảng cụ thể
+
 cargo build --release --features sandbox-landlock  # Linux
 cargo build --release --features sandbox-docker    # Tất cả nền tảng
 ```
@@ -272,18 +283,22 @@ Box<dyn ResourceMonitor>
 
 ```toml
 # Không dùng sandbox (nhanh nhất, chỉ app-layer)
+
 [security.sandbox]
 backend = "none"
 
 # Dùng Landlock (Linux kernel LSM, native)
+
 [security.sandbox]
 backend = "landlock"
 
 # Dùng Firejail (user-space, cần cài firejail)
+
 [security.sandbox]
 backend = "firejail"
 
 # Dùng Docker (nặng nhất, cách ly hoàn toàn)
+
 [security.sandbox]
 backend = "docker"
 ```
@@ -295,6 +310,7 @@ backend = "docker"
 ## 6. Tác động phụ thuộc: thêm tối thiểu
 
 ### Phụ thuộc hiện tại (để tham khảo)
+
 ```
 reqwest, tokio, serde, anyhow, uuid, chrono, rusqlite,
 axum, tracing, opentelemetry, ...
@@ -336,15 +352,19 @@ axum, tracing, opentelemetry, ...
 
 ```bash
 # Developer build (nhanh nhất, không có extra feature)
+
 cargo build --profile dev
 
 # Standard release (build hiện tại của bạn)
+
 cargo build --release
 
 # Production với full security
+
 cargo build --release --features security-full
 
 # Nhắm đến phần cứng cụ thể
+
 cargo build --release --target aarch64-unknown-linux-gnu  # Raspberry Pi
 cargo build --release --target riscv64gc-unknown-linux-gnu # RISC-V
 cargo build --release --target armv7-unknown-linux-gnueabihf  # ARMv7

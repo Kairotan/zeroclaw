@@ -322,7 +322,6 @@ ls -lh target/release/zeroclaw
 - CI/CD: בטא (אוטומטי בדחיפה) → יציב (שליחה ידנית) → Docker, crates.io, Scoop, AUR, Homebrew, ציוץ.
 - בינאריים מוכנים מראש ל-Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## הגדרות
 
 מינימלי `~/.zeroclaw/config.toml`:

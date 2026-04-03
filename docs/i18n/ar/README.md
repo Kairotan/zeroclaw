@@ -322,7 +322,6 @@ ls -lh target/release/zeroclaw
 - CI/CD: تجريبي (تلقائي عند الدفع) → مستقر (إرسال يدوي) → Docker، crates.io، Scoop، AUR، Homebrew، تغريدة.
 - ملفات ثنائية مُعدة مسبقًا لـ Linux (x86_64، aarch64، armv7)، macOS (x86_64، aarch64)، Windows (x86_64).
 
-
 ## التكوين
 
 الحد الأدنى `~/.zeroclaw/config.toml`:

@@ -322,7 +322,6 @@ Dashboard web React 19 + Vite 6 + Tailwind CSS 4 servita direttamente dal Gatewa
 - CI/CD: beta (automatico al push) → stable (dispatch manuale) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Binari precompilati per Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configurazione
 
 `~/.zeroclaw/config.toml` minimo:

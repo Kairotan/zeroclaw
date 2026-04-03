@@ -322,7 +322,6 @@ Panel web React 19 + Vite 6 + Tailwind CSS 4 servido directamente desde el Gatew
 - CI/CD: beta (automático al hacer push) → stable (dispatch manual) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Binarios preconstruidos para Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configuración
 
 `~/.zeroclaw/config.toml` mínimo:

@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 web-hallintapaneeli, jota tarjoillaan suoraan
 - CI/CD: beta (auto on push) → stable (manual dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Valmiit binaarit Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Maaritykset
 
 Minimaalinen `~/.zeroclaw/config.toml`:

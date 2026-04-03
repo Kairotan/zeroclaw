@@ -45,6 +45,7 @@ Build với `--features hardware` (hoặc features mặc định) để bao gồ
 ```bash
 ssh arduino@<UNO_Q_IP>
 # Nhập password đã đặt
+
 ```
 
 ---
@@ -55,24 +56,30 @@ ssh arduino@<UNO_Q_IP>
 
 ```bash
 # SSH vào Uno Q
+
 ssh arduino@<UNO_Q_IP>
 
 # Cài Rust
+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source ~/.cargo/env
 
 # Cài các gói phụ thuộc build (Debian)
+
 sudo apt-get update
 sudo apt-get install -y pkg-config libssl-dev
 
 # Clone zeroclaw (hoặc scp project của bạn)
+
 git clone https://github.com/zeroclaw-labs/zeroclaw.git
 cd zeroclaw
 
 # Build (~15–30 phút trên Uno Q)
+
 cargo build --release
 
 # Cài đặt
+
 sudo cp target/release/zeroclaw /usr/local/bin/
 ```
 
@@ -80,16 +87,20 @@ sudo cp target/release/zeroclaw /usr/local/bin/
 
 ```bash
 # Trên Mac — thêm target aarch64
+
 rustup target add aarch64-unknown-linux-gnu
 
 # Cài cross-compiler (macOS; cần cho linking)
+
 brew tap messense/macos-cross-toolchains
 brew install aarch64-unknown-linux-gnu
 
 # Build
+
 CC_aarch64_unknown_linux_gnu=aarch64-unknown-linux-gnu-gcc cargo build --release --target aarch64-unknown-linux-gnu
 
 # Copy sang Uno Q
+
 scp target/aarch64-unknown-linux-gnu/release/zeroclaw arduino@<UNO_Q_IP>:~/
 ssh arduino@<UNO_Q_IP> "sudo mv ~/zeroclaw /usr/local/bin/"
 ```
@@ -106,9 +117,11 @@ Nếu cross-compile thất bại, dùng Phương án A và build trực tiếp t
 ssh arduino@<UNO_Q_IP>
 
 # Cấu hình nhanh
+
 zeroclaw onboard --api-key YOUR_OPENROUTER_KEY --provider openrouter
 
 # Hoặc tạo config thủ công
+
 mkdir -p ~/.zeroclaw/workspace
 nano ~/.zeroclaw/config.toml
 ```
@@ -145,6 +158,7 @@ compact_context = true
 ssh arduino@<UNO_Q_IP>
 
 # Chạy daemon (Telegram polling hoạt động qua WiFi)
+
 zeroclaw daemon --host 127.0.0.1 --port 3000
 ```
 

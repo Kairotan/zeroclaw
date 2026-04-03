@@ -43,6 +43,7 @@ Với provider `custom:` và `anthropic-custom:`, dùng biến môi trường ch
 ```bash
 export API_KEY="your-api-key"
 # hoặc: export ZEROCLAW_API_KEY="your-api-key"
+
 zeroclaw agent
 ```
 
@@ -52,9 +53,11 @@ Xác minh endpoint tùy chỉnh của bạn:
 
 ```bash
 # Chế độ tương tác
+
 zeroclaw agent
 
 # Kiểm tra tin nhắn đơn
+
 zeroclaw agent -m "test message"
 ```
 

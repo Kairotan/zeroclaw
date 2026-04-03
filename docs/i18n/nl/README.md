@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 webdashboard geserveerd direct vanuit de Gate
 - CI/CD: beta (auto bij push) → stable (handmatige dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Voorgebouwde binaries voor Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configuratie
 
 Minimale `~/.zeroclaw/config.toml`:

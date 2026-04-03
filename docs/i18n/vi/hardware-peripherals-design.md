@@ -139,13 +139,16 @@ ZeroClaw trên Pi; GPIO qua rppal hoặc sysfs. Không cần firmware riêng.
 
 ```bash
 # Edge-Native: run on device (ESP32, RPi)
+
 zeroclaw agent --mode edge
 
 # Host-Mediated: connect to USB/J-Link target
+
 zeroclaw agent --peripheral nucleo-f401re:/dev/ttyACM0
 zeroclaw agent --probe jlink
 
 # Hardware introspection
+
 zeroclaw hardware discover
 zeroclaw hardware introspect /dev/ttyACM0
 ```
@@ -172,6 +175,7 @@ transport = "native"
 board = "esp32"
 transport = "wifi"
 # Edge-Native: ZeroClaw runs on ESP32
+
 ```
 
 ## 6. Kiến trúc: Peripheral là điểm mở rộng

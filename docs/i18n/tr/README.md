@@ -322,7 +322,6 @@ Gateway'den doğrudan sunulan React 19 + Vite 6 + Tailwind CSS 4 web paneli:
 - CI/CD: beta (push'ta otomatik) → stable (manuel dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64) için önceden derlenmiş ikili dosyalar.
 
-
 ## Yapılandırma
 
 Minimal `~/.zeroclaw/config.toml`:

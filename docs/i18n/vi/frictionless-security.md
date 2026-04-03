@@ -6,6 +6,7 @@
 > Để biết hành vi runtime hiện tại, xem [config-reference.md](config-reference.md), [operations-runbook.md](operations-runbook.md), và [troubleshooting.md](troubleshooting.md).
 
 ## Nguyên tắc cốt lõi
+
 > **"Các tính năng bảo mật nên như túi khí — luôn hiện diện, bảo vệ, và vô hình cho đến khi cần."**
 
 ## Thiết kế: tự động phát hiện âm thầm
@@ -127,12 +128,14 @@ impl SandboxConfig {
 $ zeroclaw agent -m "hello"
 
 # Lần đầu: phát hiện âm thầm
+
 [INFO] Detecting security features...
 [INFO] ✓ Landlock sandbox enabled (kernel 6.2+)
 [INFO] ✓ Memory monitoring active (512MB limit)
 [INFO] ✓ Audit logging enabled (~/.config/zeroclaw/audit.log)
 
 # Các lần sau: yên lặng
+
 $ zeroclaw agent -m "hello"
 [agent] Thinking...
 ```
@@ -143,15 +146,21 @@ $ zeroclaw agent -m "hello"
 # ~/.config/zeroclaw/config.toml
 
 # Các section này KHÔNG được ghi trừ khi người dùng tùy chỉnh
+
 # [security.sandbox]
+
 # enabled = true  # (mặc định, tự phát hiện)
+
 # backend = "landlock"  # (mặc định, tự phát hiện)
 
 # [security.resources]
+
 # max_memory_mb = 512  # (mặc định)
 
 # [security.audit]
+
 # enabled = true  # (mặc định)
+
 ```
 
 Chỉ khi người dùng thay đổi:
@@ -167,6 +176,7 @@ max_memory_mb = 1024  # Người dùng tăng giới hạn
 
 ```bash
 # Kiểm tra trạng thái đang hoạt động
+
 $ zeroclaw security --status
 Security Status:
   ✓ Sandbox: Landlock (Linux kernel 6.2)
@@ -175,12 +185,15 @@ Security Status:
   → 47 events logged today
 
 # Tắt sandbox tường minh (ghi vào config)
+
 $ zeroclaw config set security.sandbox.enabled false
 
 # Bật backend cụ thể
+
 $ zeroclaw config set security.sandbox.backend firejail
 
 # Điều chỉnh giới hạn
+
 $ zeroclaw config set security.resources.max_memory_mb 2048
 ```
 
@@ -265,6 +278,7 @@ impl Default for SandboxBackend {
 ## So sánh trải nghiệm người dùng
 
 ### Trước (hiện tại)
+
 ```bash
 $ zeroclaw onboard
 [1/9] Workspace Setup...
@@ -275,6 +289,7 @@ $ zeroclaw onboard
 ```
 
 ### Sau (với bảo mật không gây cản trở)
+
 ```bash
 $ zeroclaw onboard
 [1/9] Workspace Setup...
@@ -283,6 +298,7 @@ $ zeroclaw onboard
 [9/9] Workspace Files...
 ✓ Security: Supervised | workspace-scoped | Landlock sandbox ✓
 # ↑ Chỉ thêm một từ, tự phát hiện âm thầm!
+
 ```
 
 ---

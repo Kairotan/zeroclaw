@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 web dashboard na direktang inihahatid mula sa
 - CI/CD: beta (auto sa push) → stable (manual dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Pre-built binaries para sa Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Configuration
 
 Minimal na `~/.zeroclaw/config.toml`:

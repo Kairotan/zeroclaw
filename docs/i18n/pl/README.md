@@ -322,7 +322,6 @@ Panel webowy React 19 + Vite 6 + Tailwind CSS 4 serwowany bezpośrednio z Gatewa
 - CI/CD: beta (auto na push) → stable (ręczny dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Gotowe pliki binarne dla Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Konfiguracja
 
 Minimalna `~/.zeroclaw/config.toml`:

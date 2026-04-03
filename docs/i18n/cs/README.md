@@ -322,7 +322,6 @@ Webový panel React 19 + Vite 6 + Tailwind CSS 4 servírovaný přímo z Gateway
 - CI/CD: beta (auto na push) → stable (ruční dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, tweet.
 - Předpřipravené binárky pro Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Konfigurace
 
 Minimální `~/.zeroclaw/config.toml`:

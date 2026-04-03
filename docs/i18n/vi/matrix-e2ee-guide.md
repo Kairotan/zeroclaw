@@ -42,14 +42,17 @@ homeserver = "https://matrix.example.com"
 access_token = "syt_your_token"
 
 # Optional but recommended for E2EE stability:
+
 user_id = "@zeroclaw:matrix.example.com"
 device_id = "DEVICEID123"
 
 # Room ID or alias
+
 room_id = "!xtHhdHIIVEZbDPvTvZ:matrix.example.com"
 # room_id = "#ops:matrix.example.com"
 
 # Use ["*"] during initial verification, then tighten.
+
 allowed_users = ["*"]
 ```
 

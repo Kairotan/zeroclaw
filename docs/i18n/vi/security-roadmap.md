@@ -49,6 +49,7 @@ ZeroClaw đã có **application-layer security xuất sắc**:
 ## Lộ trình triển khai
 
 ### Giai đoạn 1: kết quả nhanh (1-2 tuần)
+
 **Mục tiêu**: giải quyết các thiếu sót nghiêm trọng với độ phức tạp tối thiểu
 
 | Nhiệm vụ | File | Công sức | Tác động |
@@ -67,6 +68,7 @@ ZeroClaw đã có **application-layer security xuất sắc**:
 ---
 
 ### Giai đoạn 2: tích hợp nền tảng (2-3 tuần)
+
 **Mục tiêu**: tích hợp sâu với OS để cách ly cấp production
 
 | Nhiệm vụ | Công sức | Tác động |
@@ -86,6 +88,7 @@ ZeroClaw đã có **application-layer security xuất sắc**:
 ---
 
 ### Giai đoạn 3: hardening production (1-2 tuần)
+
 **Mục tiêu**: các tính năng bảo mật doanh nghiệp
 
 | Nhiệm vụ | Công sức | Tác động |
@@ -111,11 +114,13 @@ ZeroClaw đã có **application-layer security xuất sắc**:
 level = "strict"  # relaxed | default | strict | paranoid
 
 # Cấu hình sandbox
+
 [security.sandbox]
 enabled = true
 backend = "auto"  # auto | firejail | bubblewrap | landlock | docker | none
 
 # Giới hạn tài nguyên
+
 [resources]
 max_memory_mb = 512
 max_memory_per_command_mb = 128
@@ -124,6 +129,7 @@ max_cpu_time_seconds = 60
 max_subprocesses = 10
 
 # Audit logging
+
 [security.audit]
 enabled = true
 log_path = "~/.config/zeroclaw/audit.log"
@@ -131,6 +137,7 @@ sign_events = true
 max_size_mb = 100
 
 # Autonomy (hiện có, được cải thiện)
+
 [autonomy]
 level = "supervised"  # readonly | supervised | full
 allowed_commands = ["git", "ls", "cat", "grep", "find"]
@@ -146,22 +153,31 @@ max_actions_per_hour = 20
 
 ```bash
 # Kiểm tra trạng thái bảo mật
+
 zeroclaw security --check
 # → ✓ Sandbox: Firejail active
+
 # → ✓ Audit logging enabled (42 events today)
+
 # → → Resource limits: 512MB mem, 50% CPU
 
 # Truy vấn audit log
+
 zeroclaw audit --user @alice --since 24h
 zeroclaw audit --risk high --violations-only
 zeroclaw audit --verify-signatures
 
 # Kiểm tra sandbox
+
 zeroclaw sandbox --test
 # → Testing isolation...
+
 #   ✓ Cannot read /etc/passwd
+
 #   ✓ Cannot access ~/.ssh
+
 #   ✓ Can read /workspace
+
 ```
 
 ---

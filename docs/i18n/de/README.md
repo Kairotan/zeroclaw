@@ -322,7 +322,6 @@ React 19 + Vite 6 + Tailwind CSS 4 Web-Dashboard, direkt vom Gateway bereitgeste
 - CI/CD: beta (automatisch bei Push) → stable (manueller Dispatch) → Docker, crates.io, Scoop, AUR, Homebrew, Tweet.
 - Vorgefertigte Binaries für Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-
 ## Konfiguration
 
 Minimale `~/.zeroclaw/config.toml`:
