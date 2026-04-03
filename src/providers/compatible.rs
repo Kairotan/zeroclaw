@@ -3875,6 +3875,10 @@ mod tests {
         let native = OpenAiCompatibleProvider::convert_messages_for_native(&messages, true);
         assert_eq!(native.len(), 1);
         assert_eq!(native[0].role, "assistant");
+        assert!(
+            native[0].content.is_none(),
+            "assistant tool-call turns must strip leaked text content on replay"
+        );
         assert_eq!(
             native[0].reasoning_content.as_deref(),
             Some("Let me think about this...")
