@@ -26,7 +26,11 @@ const MIN_POLL_SECONDS: u64 = 5;
 const SHELL_JOB_TIMEOUT_SECS: u64 = 120;
 const SCHEDULER_COMPONENT: &str = "scheduler";
 
-pub async fn run(config: Config) -> Result<()> {
+/// Type alias for the optional broadcast sender used to push cron results
+/// to connected dashboard/SSE clients.
+pub type EventBroadcast = Option<tokio::sync::broadcast::Sender<serde_json::Value>>;
+
+pub async fn run(config: Config, event_tx: EventBroadcast) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -53,6 +57,7 @@ pub async fn run(config: Config) -> Result<()> {
             enabled: true,
             model: None,
             allowed_tools: None,
+            approval_requester_user_id: None,
             session_target: None,
             delivery: None,
         };
@@ -82,7 +87,7 @@ pub async fn run(config: Config) -> Result<()> {
     //    without the `max_tasks` limit so every missed job fires once.
     //    Controlled by `[cron] catch_up_on_startup` (default: true).
     if config.cron.catch_up_on_startup {
-        catch_up_overdue_jobs(&config, &security).await;
+        catch_up_overdue_jobs(&config, &security, &event_tx).await;
     } else {
         tracing::info!("Scheduler startup: catch-up disabled by config");
     }
@@ -101,7 +106,7 @@ pub async fn run(config: Config) -> Result<()> {
             }
         };
 
-        process_due_jobs(&config, &security, jobs, SCHEDULER_COMPONENT).await;
+        process_due_jobs(&config, &security, jobs, SCHEDULER_COMPONENT, &event_tx).await;
     }
 }
 
@@ -109,7 +114,11 @@ pub async fn run(config: Config) -> Result<()> {
 ///
 /// Called once at scheduler startup so that jobs missed during downtime
 /// (e.g. late boot, daemon restart) are caught up immediately.
-async fn catch_up_overdue_jobs(config: &Config, security: &Arc<SecurityPolicy>) {
+async fn catch_up_overdue_jobs(
+    config: &Config,
+    security: &Arc<SecurityPolicy>,
+    event_tx: &EventBroadcast,
+) {
     let now = Utc::now();
     let jobs = match all_overdue_jobs(config, now) {
         Ok(jobs) => jobs,
@@ -129,7 +138,7 @@ async fn catch_up_overdue_jobs(config: &Config, security: &Arc<SecurityPolicy>) 
         "Scheduler startup: catching up overdue jobs"
     );
 
-    process_due_jobs(config, security, jobs, SCHEDULER_COMPONENT).await;
+    process_due_jobs(config, security, jobs, SCHEDULER_COMPONENT, event_tx).await;
 
     tracing::info!("Scheduler startup: catch-up complete");
 }
@@ -179,6 +188,7 @@ async fn process_due_jobs(
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
+    event_tx: &EventBroadcast,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::health::mark_component_ok(component);
@@ -203,6 +213,16 @@ async fn process_due_jobs(
     while let Some((job_id, success, output)) = in_flight.next().await {
         if !success {
             tracing::warn!("Scheduler job '{job_id}' failed: {output}");
+        }
+        // Broadcast cron result to dashboard/SSE clients.
+        if let Some(tx) = event_tx {
+            let _ = tx.send(serde_json::json!({
+                "type": "cron_result",
+                "job_id": job_id,
+                "success": success,
+                "output": output,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }));
         }
     }
 }
@@ -291,17 +311,21 @@ async fn run_agent_job(
 
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {
-            Box::pin(crate::agent::run(
-                config.clone(),
-                Some(prefixed_prompt),
+            Box::pin(crate::agent::loop_::scope_thread_and_requester_ids(
                 None,
-                model_override,
-                config.default_temperature,
-                vec![],
-                false,
-                None,
-                job.allowed_tools.clone(),
-                channel_context,
+                job.approval_requester_user_id.clone(),
+                crate::agent::run(
+                    config.clone(),
+                    Some(prefixed_prompt),
+                    None,
+                    model_override,
+                    config.default_temperature,
+                    vec![],
+                    false,
+                    None,
+                    job.allowed_tools.clone(),
+                    channel_context,
+                ),
             ))
             .await
         }
@@ -641,6 +665,7 @@ pub(crate) async fn deliver_announcement(
                     wa.pair_phone.clone(),
                     wa.pair_code.clone(),
                     wa.allowed_numbers.clone(),
+                    wa.mention_only,
                     wa.mode.clone(),
                     wa.dm_policy.clone(),
                     wa.group_policy.clone(),
@@ -831,6 +856,7 @@ mod tests {
             delivery: DeliveryConfig::default(),
             delete_after_run: false,
             allowed_tools: None,
+            approval_requester_user_id: None,
             source: "imperative".into(),
             created_at: Utc::now(),
             next_run: Utc::now(),
@@ -1094,7 +1120,7 @@ mod tests {
         let component = unique_component("scheduler-idle");
 
         crate::health::mark_component_error(&component, "pre-existing error");
-        process_due_jobs(&config, &security, Vec::new(), &component).await;
+        process_due_jobs(&config, &security, Vec::new(), &component, &None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -1115,7 +1141,7 @@ mod tests {
         let component = unique_component("scheduler-fail");
 
         crate::health::mark_component_ok(&component);
-        process_due_jobs(&config, &security, vec![job], &component).await;
+        process_due_jobs(&config, &security, vec![job], &component, &None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -1154,6 +1180,7 @@ mod tests {
             None,
             true,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1179,6 +1206,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
         )
         .unwrap();
@@ -1248,6 +1276,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1288,6 +1317,7 @@ mod tests {
             }),
             false,
             None,
+            None,
         )
         .unwrap();
         let started = Utc::now();
@@ -1319,6 +1349,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -1483,5 +1514,107 @@ mod tests {
         let redacted = scan_and_redact_output("telegram", "123456", clean_output);
 
         assert_eq!(redacted.as_str(), clean_output);
+    }
+
+    #[test]
+    fn redacted_output_prepends_validated_mention_after_scanning() {
+        let leaked_output = "Deployment key: sk_test_FAKE1234567890abcdefgh"; // gitleaks:allow
+        let mention =
+            crate::cron::ValidatedMention::try_new("discord", "123456789012345678").unwrap();
+
+        let safe_output =
+            scan_and_redact_output("discord", "999", leaked_output).prepend_mention(&mention);
+
+        assert!(safe_output.as_str().starts_with("<@123456789012345678>\n"));
+        assert!(
+            !safe_output
+                .as_str()
+                .contains("sk_test_FAKE1234567890abcdefgh") // gitleaks:allow
+        );
+        assert!(safe_output.as_str().contains("[REDACTED"));
+    }
+
+    // ── Broadcast / EventBroadcast tests ─────────────────────────────
+
+    #[tokio::test]
+    async fn broadcast_sends_cron_result_on_success() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let job = test_job("echo broadcast-ok");
+        let security = Arc::new(SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+        ));
+        let component = unique_component("broadcast-ok");
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let event_tx: EventBroadcast = Some(tx);
+
+        process_due_jobs(&config, &security, vec![job], &component, &event_tx).await;
+
+        let event = rx.try_recv().expect("should receive a broadcast event");
+        assert_eq!(event["type"], "cron_result");
+        assert_eq!(event["job_id"], "test-job");
+        assert_eq!(event["success"], true);
+        assert!(event["output"].as_str().unwrap().contains("broadcast-ok"));
+        assert!(event["timestamp"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn broadcast_sends_cron_result_on_failure() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let job = test_job("ls definitely_missing_file_for_broadcast_fail_test");
+        let security = Arc::new(SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+        ));
+        let component = unique_component("broadcast-fail");
+
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let event_tx: EventBroadcast = Some(tx);
+
+        process_due_jobs(&config, &security, vec![job], &component, &event_tx).await;
+
+        let event = rx.try_recv().expect("should receive a broadcast event");
+        assert_eq!(event["type"], "cron_result");
+        assert_eq!(event["job_id"], "test-job");
+        assert_eq!(event["success"], false);
+        assert!(event["timestamp"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn broadcast_none_skips_without_error() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let job = test_job("echo no-broadcast");
+        let security = Arc::new(SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+        ));
+        let component = unique_component("broadcast-none");
+
+        // event_tx = None — should complete without panic.
+        process_due_jobs(&config, &security, vec![job], &component, &None).await;
+    }
+
+    #[tokio::test]
+    async fn broadcast_handles_no_subscribers() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config(&tmp).await;
+        let job = test_job("echo no-subscribers");
+        let security = Arc::new(SecurityPolicy::from_config(
+            &config.autonomy,
+            &config.workspace_dir,
+        ));
+        let component = unique_component("broadcast-no-sub");
+
+        let (tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        // Drop the only receiver immediately — `let _ = tx.send(...)` in
+        // process_due_jobs must not panic when there are no subscribers.
+        let event_tx: EventBroadcast = Some(tx);
+
+        process_due_jobs(&config, &security, vec![job], &component, &event_tx).await;
+        // If we got here without panic, the test passes.
     }
 }

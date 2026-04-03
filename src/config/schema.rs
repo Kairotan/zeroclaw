@@ -586,6 +586,11 @@ pub struct DelegateAgentConfig {
     /// When unset or empty, the sub-agent falls back to the default workspace `skills/` directory.
     #[serde(default)]
     pub skills_directory: Option<String>,
+    /// Optional memory namespace for isolation.
+    /// When set, the sub-agent's memory operations are isolated to this namespace,
+    /// preventing cross-contamination with memory from other agents.
+    #[serde(default)]
+    pub memory_namespace: Option<String>,
 }
 
 fn default_delegate_timeout_secs() -> u64 {
@@ -2483,8 +2488,8 @@ fn default_browser_webdriver_url() -> String {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            allowed_domains: vec!["*".into()],
+            enabled: false,
+            allowed_domains: Vec::new(),
             session_name: None,
             backend: default_browser_backend(),
             native_headless: default_true(),
@@ -2500,8 +2505,7 @@ impl Default for BrowserConfig {
 /// HTTP request tool configuration (`[http_request]` section).
 ///
 /// Domain filtering: `allowed_domains` controls which hosts are reachable (use `["*"]`
-/// for all public hosts, which is the default). If `allowed_domains` is empty, all
-/// requests are rejected.
+/// for all public hosts). If `allowed_domains` is empty, all requests are rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HttpRequestConfig {
     /// Enable `http_request` tool for API interactions
@@ -5279,6 +5283,14 @@ pub struct AutonomyConfig {
     /// model in tool specs.
     #[serde(default)]
     pub non_cli_excluded_tools: Vec<String>,
+
+    /// Timeout in seconds for shell tool subprocesses. Default: 60.
+    #[serde(default = "default_shell_timeout_secs")]
+    pub shell_timeout_secs: u64,
+}
+
+fn default_shell_timeout_secs() -> u64 {
+    60
 }
 
 fn default_auto_approve() -> Vec<String> {
@@ -5374,6 +5386,7 @@ impl Default for AutonomyConfig {
             always_ask: default_always_ask(),
             allowed_roots: Vec::new(),
             non_cli_excluded_tools: Vec::new(),
+            shell_timeout_secs: default_shell_timeout_secs(),
         }
     }
 }
@@ -5697,9 +5710,9 @@ pub struct ClassificationRule {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct HeartbeatConfig {
-    /// Enable periodic heartbeat pings. Default: `false`.
+    /// Enable periodic heartbeat pings. Default: `true`.
     pub enabled: bool,
-    /// Interval in minutes between heartbeat pings. Default: `5`.
+    /// Interval in minutes between heartbeat pings. Minimum: `1`. Default: `30`.
     #[serde(default = "default_heartbeat_interval")]
     pub interval_minutes: u32,
     /// Enable two-phase heartbeat: Phase 1 asks LLM whether to run, Phase 2
@@ -5750,6 +5763,11 @@ pub struct HeartbeatConfig {
     /// conversation history — just as if the user had sent a message.
     #[serde(default)]
     pub load_session_context: bool,
+    /// Maximum wall-clock seconds allowed for a single agent invocation
+    /// (Phase 1 decision or Phase 2 task execution). `0` disables.
+    /// Default: `600` (10 minutes).
+    #[serde(default = "default_heartbeat_task_timeout")]
+    pub task_timeout_secs: u64,
 }
 
 fn default_heartbeat_interval() -> u32 {
@@ -5772,10 +5790,14 @@ fn default_heartbeat_max_run_history() -> u32 {
     100
 }
 
+fn default_heartbeat_task_timeout() -> u64 {
+    600
+}
+
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             interval_minutes: default_heartbeat_interval(),
             two_phase: true,
             message: None,
@@ -5789,6 +5811,7 @@ impl Default for HeartbeatConfig {
             deadman_to: None,
             max_run_history: default_heartbeat_max_run_history(),
             load_session_context: false,
+            task_timeout_secs: default_heartbeat_task_timeout(),
         }
     }
 }
@@ -5852,6 +5875,10 @@ pub struct CronJobDecl {
     /// Allowlist of tool names for agent jobs.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
+    /// Discord user allowed to approve this job's tool prompts.
+    /// When omitted, button approvals are rejected fail-closed.
+    #[serde(default)]
+    pub approval_requester_user_id: Option<String>,
     /// Session target: `"isolated"` (default) or `"main"`.
     #[serde(default)]
     pub session_target: Option<String>,
@@ -6132,6 +6159,8 @@ pub struct ChannelsConfig {
     /// Voice wake word detection channel configuration.
     #[cfg(feature = "voice-wake")]
     pub voice_wake: Option<VoiceWakeConfig>,
+    /// MQTT channel configuration (SOP listener).
+    pub mqtt: Option<MqttConfig>,
     /// Base timeout in seconds for processing a single channel message (LLM + tools).
     /// Runtime uses this as a per-turn budget that scales with tool-loop depth
     /// (up to 4x, capped) so one slow/retried model call does not consume the
@@ -6269,6 +6298,10 @@ impl ChannelsConfig {
                 Box::new(ConfigWrapper::new(self.voice_wake.as_ref())),
                 self.voice_wake.is_some(),
             ),
+            (
+                Box::new(ConfigWrapper::new(self.mqtt.as_ref())),
+                self.mqtt.is_some(),
+            ),
         ]
     }
 
@@ -6320,6 +6353,7 @@ impl Default for ChannelsConfig {
             #[cfg(feature = "channel-nostr")]
             nostr: None,
             clawdtalk: None,
+            mqtt: None,
             reddit: None,
             bluesky: None,
             voice_call: None,
@@ -6442,6 +6476,10 @@ pub struct DiscordConfig {
     /// Only used when `stream_mode = "multi_message"`.
     #[serde(default = "default_multi_message_delay_ms")]
     pub multi_message_delay_ms: u64,
+    /// Stall-watchdog timeout in seconds. When non-zero, the bot will abort
+    /// and retry if no progress is made within this duration. 0 = disabled.
+    #[serde(default)]
+    pub stall_timeout_secs: u64,
 }
 
 impl ChannelConfig for DiscordConfig {
@@ -6791,6 +6829,11 @@ pub struct WhatsAppConfig {
     /// Allowed phone numbers (E.164 format: +1234567890) or "*" for all
     #[serde(default)]
     pub allowed_numbers: Vec<String>,
+    /// When true, only respond to messages that @-mention the bot in groups (Web mode only).
+    /// Direct messages are always processed.
+    /// Bot identity is resolved from the wa-rs device at runtime; `pair_phone` seeds it on first connect.
+    #[serde(default)]
+    pub mention_only: bool,
     /// Usage mode for WhatsApp Web: "business" (default) or "personal".
     /// In personal mode the bot applies dm_policy, group_policy, and
     /// self_chat_mode to decide which chats to respond in.
@@ -6956,6 +6999,106 @@ impl WhatsAppConfig {
     pub fn is_ambiguous_config(&self) -> bool {
         self.phone_number_id.is_some() && self.session_path.is_some()
     }
+}
+
+/// MQTT channel configuration (SOP listener).
+///
+/// Subscribes to MQTT topics and dispatches incoming messages
+/// to the SOP engine for processing.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MqttConfig {
+    /// MQTT broker URL (e.g., `mqtt://localhost:1883` or `mqtts://broker.example.com:8883`).
+    /// Use `mqtt://` for plain connections or `mqtts://` for TLS.
+    pub broker_url: String,
+    /// MQTT client ID (must be unique per broker).
+    pub client_id: String,
+    /// Topics to subscribe to (e.g., `sensors/#`, `alerts/+/critical`).
+    /// At least one topic is required.
+    #[serde(default)]
+    pub topics: Vec<String>,
+    /// MQTT QoS level (0 = at-most-once, 1 = at-least-once, 2 = exactly-once). Default: 1.
+    #[serde(default = "default_mqtt_qos")]
+    pub qos: u8,
+    /// Username for authentication (optional).
+    pub username: Option<String>,
+    /// Password for authentication (optional).
+    pub password: Option<String>,
+    /// Enable TLS encryption. Must match the broker_url scheme:
+    /// - `mqtt://` → `use_tls: false`
+    /// - `mqtts://` → `use_tls: true`
+    #[serde(default)]
+    pub use_tls: bool,
+    /// Keep-alive interval in seconds (default: 30). Prevents broker disconnect on idle.
+    #[serde(default = "default_mqtt_keep_alive_secs")]
+    pub keep_alive_secs: u64,
+}
+
+impl MqttConfig {
+    /// Validate the MQTT configuration.
+    ///
+    /// Checks:
+    /// - QoS is 0, 1, or 2
+    /// - broker_url uses valid scheme (`mqtt://` or `mqtts://`)
+    /// - `use_tls` flag matches broker_url scheme
+    /// - At least one topic is configured
+    /// - client_id is non-empty
+    pub fn validate(&self) -> anyhow::Result<()> {
+        // QoS validation
+        if self.qos > 2 {
+            anyhow::bail!("qos must be 0, 1, or 2, got {}", self.qos);
+        }
+
+        // Broker URL validation
+        let is_tls_scheme = self.broker_url.starts_with("mqtts://");
+        let is_mqtt_scheme = self.broker_url.starts_with("mqtt://");
+
+        if !is_tls_scheme && !is_mqtt_scheme {
+            anyhow::bail!(
+                "broker_url must start with 'mqtt://' or 'mqtts://', got: {}",
+                self.broker_url
+            );
+        }
+
+        // TLS flag validation
+        if is_mqtt_scheme && self.use_tls {
+            anyhow::bail!("use_tls is true but broker_url uses 'mqtt://' (not 'mqtts://')");
+        }
+
+        if is_tls_scheme && !self.use_tls {
+            anyhow::bail!(
+                "use_tls is false but broker_url uses 'mqtts://' (requires use_tls: true)"
+            );
+        }
+
+        // Topics validation
+        if self.topics.is_empty() {
+            anyhow::bail!("at least one topic must be configured");
+        }
+
+        // Client ID validation
+        if self.client_id.is_empty() {
+            anyhow::bail!("client_id must not be empty");
+        }
+
+        Ok(())
+    }
+}
+
+impl ChannelConfig for MqttConfig {
+    fn name() -> &'static str {
+        "MQTT"
+    }
+    fn desc() -> &'static str {
+        "MQTT SOP Listener"
+    }
+}
+
+fn default_mqtt_qos() -> u8 {
+    1
+}
+
+fn default_mqtt_keep_alive_secs() -> u64 {
+    30
 }
 
 /// IRC channel configuration.
@@ -10813,7 +10956,7 @@ async fn sync_directory(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         let dir = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
@@ -10903,6 +11046,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
+    #[cfg(unix)]
     use tempfile::TempDir;
     use tokio::sync::{Mutex, MutexGuard};
     use tokio::test;
@@ -11131,7 +11275,7 @@ mod tests {
     #[test]
     async fn heartbeat_config_default() {
         let h = HeartbeatConfig::default();
-        assert!(!h.enabled);
+        assert!(h.enabled);
         assert_eq!(h.interval_minutes, 30);
         assert!(h.message.is_none());
         assert!(h.target.is_none());
@@ -11333,6 +11477,7 @@ auto_save = true
                 always_ask: vec![],
                 allowed_roots: vec![],
                 non_cli_excluded_tools: vec![],
+                shell_timeout_secs: default_shell_timeout_secs(),
             },
             trust: crate::trust::TrustConfig::default(),
             backup: BackupConfig::default(),
@@ -11404,6 +11549,7 @@ auto_save = true
                 voice_call: None,
                 #[cfg(feature = "voice-wake")]
                 voice_wake: None,
+                mqtt: None,
                 message_timeout_secs: 300,
                 ack_reactions: true,
                 show_tool_calls: true,
@@ -11505,7 +11651,7 @@ default_temperature = 0.7
         assert_eq!(parsed.observability.runtime_trace_mode, "none");
         assert_eq!(parsed.autonomy.level, AutonomyLevel::Supervised);
         assert_eq!(parsed.runtime.kind, "native");
-        assert!(!parsed.heartbeat.enabled);
+        assert!(parsed.heartbeat.enabled);
         assert!(parsed.channels_config.cli);
         assert!(parsed.memory.hygiene_enabled);
         assert_eq!(parsed.memory.archive_after_days, 7);
@@ -11623,6 +11769,14 @@ default_temperature = 0.7
                 "default tool '{tool}' must be present when no [autonomy] section"
             );
         }
+    }
+
+    #[test]
+    async fn auto_approve_defaults_exclude_browser_tools() {
+        let defaults = default_auto_approve();
+
+        assert!(!defaults.iter().any(|tool| tool == "browser"));
+        assert!(!defaults.iter().any(|tool| tool == "browser_open"));
     }
 
     /// Duplicates are not introduced when ensure_default_auto_approve runs
@@ -12056,6 +12210,7 @@ default_temperature = 0.7
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
 
@@ -12218,6 +12373,7 @@ default_temperature = 0.7
             stream_mode: StreamMode::default(),
             draft_update_interval_ms: 1000,
             multi_message_delay_ms: 800,
+            stall_timeout_secs: 0,
         };
         let json = serde_json::to_string(&dc).unwrap();
         let parsed: DiscordConfig = serde_json::from_str(&json).unwrap();
@@ -12238,6 +12394,7 @@ default_temperature = 0.7
             stream_mode: StreamMode::default(),
             draft_update_interval_ms: 1000,
             multi_message_delay_ms: 800,
+            stall_timeout_secs: 0,
         };
         let json = serde_json::to_string(&dc).unwrap();
         let parsed: DiscordConfig = serde_json::from_str(&json).unwrap();
@@ -12440,6 +12597,7 @@ allowed_users = ["@ops:matrix.org"]
             voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
+            mqtt: None,
             message_timeout_secs: 300,
             ack_reactions: true,
             show_tool_calls: true,
@@ -12638,6 +12796,7 @@ channel_ids = ["C123", "D456"]
             pair_phone: None,
             pair_code: None,
             allowed_numbers: vec!["+1234567890".into(), "+9876543210".into()],
+            mention_only: false,
             mode: WhatsAppWebMode::default(),
             dm_policy: WhatsAppChatPolicy::default(),
             group_policy: WhatsAppChatPolicy::default(),
@@ -12665,6 +12824,7 @@ channel_ids = ["C123", "D456"]
             pair_phone: None,
             pair_code: None,
             allowed_numbers: vec!["+1".into()],
+            mention_only: false,
             mode: WhatsAppWebMode::default(),
             dm_policy: WhatsAppChatPolicy::default(),
             group_policy: WhatsAppChatPolicy::default(),
@@ -12697,6 +12857,7 @@ channel_ids = ["C123", "D456"]
             pair_phone: None,
             pair_code: None,
             allowed_numbers: vec!["*".into()],
+            mention_only: false,
             mode: WhatsAppWebMode::default(),
             dm_policy: WhatsAppChatPolicy::default(),
             group_policy: WhatsAppChatPolicy::default(),
@@ -12721,6 +12882,7 @@ channel_ids = ["C123", "D456"]
             pair_phone: None,
             pair_code: None,
             allowed_numbers: vec!["+1".into()],
+            mention_only: false,
             mode: WhatsAppWebMode::default(),
             dm_policy: WhatsAppChatPolicy::default(),
             group_policy: WhatsAppChatPolicy::default(),
@@ -12744,6 +12906,7 @@ channel_ids = ["C123", "D456"]
             pair_phone: None,
             pair_code: None,
             allowed_numbers: vec![],
+            mention_only: false,
             mode: WhatsAppWebMode::default(),
             dm_policy: WhatsAppChatPolicy::default(),
             group_policy: WhatsAppChatPolicy::default(),
@@ -12778,6 +12941,7 @@ channel_ids = ["C123", "D456"]
                 pair_phone: None,
                 pair_code: None,
                 allowed_numbers: vec!["+1".into()],
+                mention_only: false,
                 mode: WhatsAppWebMode::default(),
                 dm_policy: WhatsAppChatPolicy::default(),
                 group_policy: WhatsAppChatPolicy::default(),
@@ -12807,6 +12971,7 @@ channel_ids = ["C123", "D456"]
             voice_call: None,
             #[cfg(feature = "voice-wake")]
             voice_wake: None,
+            mqtt: None,
             message_timeout_secs: 300,
             ack_reactions: true,
             show_tool_calls: true,
@@ -13058,15 +13223,15 @@ default_temperature = 0.7
         assert!(!c.composio.enabled);
         assert!(c.composio.api_key.is_none());
         assert!(c.secrets.encrypt);
-        assert!(c.browser.enabled);
-        assert_eq!(c.browser.allowed_domains, vec!["*".to_string()]);
+        assert!(!c.browser.enabled);
+        assert!(c.browser.allowed_domains.is_empty());
     }
 
     #[test]
-    async fn browser_config_default_enabled() {
+    async fn browser_config_default_disabled_and_deny_by_default() {
         let b = BrowserConfig::default();
-        assert!(b.enabled);
-        assert_eq!(b.allowed_domains, vec!["*".to_string()]);
+        assert!(!b.enabled);
+        assert!(b.allowed_domains.is_empty());
         assert_eq!(b.backend, "agent_browser");
         assert!(b.native_headless);
         assert_eq!(b.native_webdriver_url, "http://127.0.0.1:9515");
@@ -13131,8 +13296,8 @@ config_path = "/tmp/config.toml"
 default_temperature = 0.7
 "#;
         let parsed = parse_test_config(minimal);
-        assert!(parsed.browser.enabled);
-        assert_eq!(parsed.browser.allowed_domains, vec!["*".to_string()]);
+        assert!(!parsed.browser.enabled);
+        assert!(parsed.browser.allowed_domains.is_empty());
     }
 
     // ── Environment variable overrides (Docker support) ─────────

@@ -220,6 +220,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added agent cron job {}", job.id);
                 println!("  Expr  : {}", job.expression);
@@ -262,6 +263,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added one-shot agent cron job {}", job.id);
                 println!("  At    : {}", job.next_run.to_rfc3339());
@@ -299,6 +301,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added interval agent cron job {}", job.id);
                 println!("  Every(ms): {every_ms}");
@@ -340,6 +343,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
                     } else {
                         Some(allowed_tools)
                     },
+                    None,
                 )?;
                 println!("✅ Added one-shot agent cron job {}", job.id);
                 println!("  At    : {}", job.next_run.to_rfc3339());
@@ -992,6 +996,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .unwrap();
 
@@ -1033,5 +1038,19 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].job_type, JobType::Shell);
         assert_eq!(jobs[0].command, "echo ok");
+    }
+
+    #[test]
+    fn validate_delivery_config_rejects_invalid_mention_user() {
+        let err = validate_delivery_config(Some(&DeliveryConfig {
+            mode: "announce".to_string(),
+            channel: Some("discord".to_string()),
+            to: Some("123456789012345678".to_string()),
+            best_effort: true,
+            mention_user: Some("@everyone".to_string()),
+        }))
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid Discord user ID"));
     }
 }

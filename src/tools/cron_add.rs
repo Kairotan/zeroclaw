@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::agent::loop_::current_tool_loop_requester_user_id;
 use crate::config::Config;
 use crate::cron::{
     self, DeliveryConfig, JobType, Schedule, SessionTarget, deserialize_maybe_stringified,
@@ -347,6 +348,7 @@ impl Tool for CronAddTool {
                     delivery,
                     delete_after_run,
                     allowed_tools,
+                    current_tool_loop_requester_user_id(),
                 )
             }
         };
@@ -731,6 +733,34 @@ mod tests {
         assert_eq!(
             jobs[0].allowed_tools, None,
             "empty allowed_tools should be stored as None"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_job_persists_scoped_requester_user_id() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = test_config(&tmp).await;
+        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
+
+        let result = crate::agent::loop_::scope_thread_and_requester_ids(
+            Some("discord-channel-1".to_string()),
+            Some("discord-user-123".to_string()),
+            tool.execute(json!({
+                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
+                "job_type": "agent",
+                "prompt": "check status"
+            })),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success, "{:?}", result.error);
+
+        let jobs = cron::list_jobs(&cfg).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            jobs[0].approval_requester_user_id.as_deref(),
+            Some("discord-user-123")
         );
     }
 

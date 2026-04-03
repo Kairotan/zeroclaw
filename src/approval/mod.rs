@@ -19,8 +19,14 @@ use uuid::Uuid;
 // ── Types ────────────────────────────────────────────────────────
 
 /// Shared map of in-flight channel approval requests.
-/// Keyed by `approval_id` (UUID); value is a oneshot sender to deliver the response.
-pub type PendingApprovals = Arc<AsyncMutex<HashMap<String, oneshot::Sender<ApprovalResponse>>>>;
+/// Keyed by `approval_id` (UUID).
+pub type PendingApprovals = Arc<AsyncMutex<HashMap<String, PendingApproval>>>;
+
+/// One in-flight channel approval request.
+pub struct PendingApproval {
+    pub requester_user_id: Option<String>,
+    pub response_tx: oneshot::Sender<ApprovalResponse>,
+}
 
 /// Async function that sends an approval prompt (e.g. Discord buttons) to the user.
 /// Arguments: `approval_id`, `channel_id` (platform reply-target), `request`.
@@ -51,6 +57,8 @@ pub struct ChannelApproval {
 pub struct ApprovalRequest {
     pub tool_name: String,
     pub arguments: serde_json::Value,
+    #[serde(default)]
+    pub requester_user_id: Option<String>,
 }
 
 /// The user's response to an approval request.
@@ -177,10 +185,24 @@ impl ApprovalManager {
             .map_or(false, |tools| tools.contains(tool_name))
     }
 
+    fn has_channel_approval_for(&self, channel_name: &str) -> bool {
+        self.channel_approval
+            .as_ref()
+            .is_some_and(|ca| ca.channel_name == channel_name)
+    }
+
     /// Check whether a tool call requires interactive approval.
     ///
     /// Returns `true` if the call needs a prompt, `false` if it can proceed.
     pub fn needs_approval(&self, tool_name: &str) -> bool {
+        self.needs_approval_for_channel("", tool_name)
+    }
+
+    /// Channel-aware variant of [`Self::needs_approval`].
+    ///
+    /// In non-interactive mode, shell skips the outer approval gate unless
+    /// this manager has a button-approval bridge for `channel_name`.
+    pub fn needs_approval_for_channel(&self, channel_name: &str, tool_name: &str) -> bool {
         // Full autonomy never prompts.
         if self.autonomy_level == AutonomyLevel::Full {
             return false;
@@ -200,8 +222,12 @@ impl ApprovalManager {
         // own command allowlist and risk policy. Skipping the outer approval
         // gate here lets low-risk allowlisted commands (e.g. `ls`) work in
         // non-interactive channels without silently allowing medium/high-risk
-        // commands.
-        if self.non_interactive && tool_name == "shell" {
+        // commands. If a channel approval bridge exists for this channel
+        // (currently Discord), prompt instead.
+        if self.non_interactive
+            && tool_name == "shell"
+            && !self.has_channel_approval_for(channel_name)
+        {
             return false;
         }
 
@@ -295,13 +321,22 @@ impl ApprovalManager {
         }
         let approval_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        ca.pending.lock().await.insert(approval_id.clone(), tx);
+        ca.pending.lock().await.insert(
+            approval_id.clone(),
+            PendingApproval {
+                requester_user_id: request.requester_user_id.clone(),
+                response_tx: tx,
+            },
+        );
         if let Err(e) =
             (ca.prompt_fn)(approval_id.clone(), channel_id.to_string(), request.clone()).await
         {
             tracing::warn!("Approval button prompt failed: {e}");
             ca.pending.lock().await.remove(&approval_id);
             return None;
+        }
+        if ca.timeout_secs == 0 {
+            return rx.await.ok();
         }
         match tokio::time::timeout(std::time::Duration::from_secs(ca.timeout_secs), rx).await {
             Ok(Ok(response)) => Some(response),
@@ -385,6 +420,7 @@ fn truncate_for_summary(input: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::config::AutonomyConfig;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn supervised_config() -> AutonomyConfig {
         AutonomyConfig {
@@ -400,6 +436,20 @@ mod tests {
             level: AutonomyLevel::Full,
             ..AutonomyConfig::default()
         }
+    }
+
+    fn discord_bridge_manager() -> ApprovalManager {
+        let pending: PendingApprovals = Arc::new(AsyncMutex::new(HashMap::new()));
+        let prompt_fn: PromptFn = Arc::new(|_, _, _| Box::pin(async move { Ok(()) }));
+        ApprovalManager::with_channel_approval(
+            &AutonomyConfig::default(),
+            ChannelApproval {
+                channel_name: "discord".to_string(),
+                pending,
+                prompt_fn,
+                timeout_secs: 1,
+            },
+        )
     }
 
     // ── needs_approval ───────────────────────────────────────
@@ -486,6 +536,21 @@ mod tests {
             "cli",
         );
         assert!(mgr.needs_approval("file_write"));
+    }
+
+    #[test]
+    fn block_response_adds_channel_scoped_session_denylist() {
+        let mgr = ApprovalManager::for_non_interactive(&supervised_config());
+
+        mgr.record_decision(
+            "file_write",
+            &serde_json::json!({"path": "test.txt"}),
+            ApprovalResponse::Block,
+            "discord",
+        );
+
+        assert!(mgr.is_session_blocked("discord", "file_write"));
+        assert!(!mgr.is_session_blocked("slack", "file_write"));
     }
 
     // ── audit log ────────────────────────────────────────────
@@ -595,6 +660,14 @@ mod tests {
     }
 
     #[test]
+    fn non_interactive_shell_prompts_on_channel_with_button_bridge() {
+        let mgr = discord_bridge_manager();
+
+        assert!(mgr.needs_approval_for_channel("discord", "shell"));
+        assert!(!mgr.needs_approval_for_channel("slack", "shell"));
+    }
+
+    #[test]
     fn non_interactive_always_ask_tools_need_approval() {
         let mgr = ApprovalManager::for_non_interactive(&supervised_config());
         // always_ask tools (shell) still report as needing approval,
@@ -680,6 +753,7 @@ mod tests {
         let req = ApprovalRequest {
             tool_name: "shell".into(),
             arguments: serde_json::json!({"command": "echo hi"}),
+            requester_user_id: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let parsed: ApprovalRequest = serde_json::from_str(&json).unwrap();
@@ -730,5 +804,91 @@ mod tests {
             mgr.needs_approval("weather"),
             "always_ask must override auto_approve"
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_channel_async_skips_non_matching_channel_without_prompt() {
+        let prompt_calls = Arc::new(AtomicUsize::new(0));
+        let pending: PendingApprovals = Arc::new(AsyncMutex::new(HashMap::new()));
+        let calls = prompt_calls.clone();
+        let prompt_fn: PromptFn = Arc::new(move |_, _, _| {
+            let calls = calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let mgr = ApprovalManager::with_channel_approval(
+            &supervised_config(),
+            ChannelApproval {
+                channel_name: "discord".to_string(),
+                pending,
+                prompt_fn,
+                timeout_secs: 1,
+            },
+        );
+
+        let response = mgr
+            .prompt_channel_async(
+                &ApprovalRequest {
+                    tool_name: "file_write".to_string(),
+                    arguments: serde_json::json!({"path": "test.txt"}),
+                    requester_user_id: Some("alice".to_string()),
+                },
+                "slack",
+                "C123",
+            )
+            .await;
+
+        assert!(response.is_none());
+        assert_eq!(prompt_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn prompt_channel_async_zero_timeout_waits_for_response() {
+        let pending: PendingApprovals = Arc::new(AsyncMutex::new(HashMap::new()));
+        let pending_for_prompt = pending.clone();
+        let prompt_fn: PromptFn = Arc::new(move |approval_id, _, _| {
+            let pending_for_prompt = pending_for_prompt.clone();
+            Box::pin(async move {
+                let sender = pending_for_prompt
+                    .lock()
+                    .await
+                    .remove(&approval_id)
+                    .expect("pending approval should be registered before prompt_fn runs")
+                    .response_tx;
+                sender
+                    .send(ApprovalResponse::Always)
+                    .expect("receiver should still be alive");
+                Ok(())
+            })
+        });
+        let mgr = ApprovalManager::with_channel_approval(
+            &supervised_config(),
+            ChannelApproval {
+                channel_name: "discord".to_string(),
+                pending,
+                prompt_fn,
+                timeout_secs: 0,
+            },
+        );
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            mgr.prompt_channel_async(
+                &ApprovalRequest {
+                    tool_name: "file_write".to_string(),
+                    arguments: serde_json::json!({"path": "test.txt"}),
+                    requester_user_id: Some("alice".to_string()),
+                },
+                "discord",
+                "123",
+            ),
+        )
+        .await
+        .expect("zero-timeout approval should wait for the response")
+        .expect("prompt should resolve to a decision");
+
+        assert_eq!(response, ApprovalResponse::Always);
     }
 }

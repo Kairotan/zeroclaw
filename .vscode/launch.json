@@ -55,6 +55,14 @@
       "cwd": "${workspaceFolder}",
       "preLaunchTask": "Build: Debug"
     },
+    // ── Dev (browser) ────────────────────────────────────
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Dev: Browser",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web/src"
+    },
     // ── Test ──────────────────────────────────────────────
     {
       "type": "lldb",
@@ -68,6 +76,18 @@
       },
       "args": ["--exact", "${input:testName}", "--nocapture"],
       "cwd": "${workspaceFolder}"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Dev: Full Stack",
+      "configurations": ["Dev: Browser"],
+      "preLaunchTask": "Dev: Full Stack (tasks)",
+      "stopAll": true,
+      "presentation": {
+        "order": 1,
+        "group": "dev"
+      }
     }
   ]
 }

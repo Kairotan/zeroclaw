@@ -1,7 +1,11 @@
 use super::traits::{Tool, ToolResult};
-use crate::agent::loop_::run_tool_call_loop;
+use super::{
+    MemoryExportTool, MemoryForgetTool, MemoryPurgeTool, MemoryRecallTool, MemoryStoreTool,
+};
+use crate::agent::loop_::{ToolDispatchMode, run_tool_call_loop_with_dispatch_mode};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::{DelegateAgentConfig, DelegateToolConfig};
+use crate::memory::{Memory, NamespacedMemory};
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::security::SecurityPolicy;
@@ -70,6 +74,8 @@ pub struct DelegateTool {
     workspace_dir: PathBuf,
     /// Cancellation token for cascade control of background tasks.
     cancellation_token: CancellationToken,
+    /// Optional memory instance for namespace isolation on delegate agents.
+    memory: Option<Arc<dyn Memory>>,
 }
 
 impl DelegateTool {
@@ -103,6 +109,7 @@ impl DelegateTool {
             delegate_config: DelegateToolConfig::default(),
             workspace_dir: PathBuf::new(),
             cancellation_token: CancellationToken::new(),
+            memory: None,
         }
     }
 
@@ -142,6 +149,7 @@ impl DelegateTool {
             delegate_config: DelegateToolConfig::default(),
             workspace_dir: PathBuf::new(),
             cancellation_token: CancellationToken::new(),
+            memory: None,
         }
     }
 
@@ -185,6 +193,46 @@ impl DelegateTool {
     /// Return the cancellation token for external cascade control.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
+    }
+
+    /// Attach memory for namespace isolation on delegate agents.
+    pub fn with_memory(mut self, memory: Arc<dyn Memory>) -> Self {
+        self.memory = Some(memory);
+        self
+    }
+
+    /// Wrap memory with namespace isolation if configured for the given agent.
+    /// Returns the namespaced memory if memory_namespace is set, otherwise returns
+    /// the original memory.
+    fn get_agent_memory(&self, agent_config: &DelegateAgentConfig) -> Option<Arc<dyn Memory>> {
+        self.memory.as_ref().map(|mem| {
+            if let Some(namespace) = &agent_config.memory_namespace {
+                Arc::new(NamespacedMemory::new(mem.clone(), namespace.clone())) as Arc<dyn Memory>
+            } else {
+                mem.clone()
+            }
+        })
+    }
+
+    fn clone_sub_tool_for_agent(
+        &self,
+        tool: Arc<dyn Tool>,
+        agent_memory: Option<&Arc<dyn Memory>>,
+    ) -> Box<dyn Tool> {
+        match (tool.name(), agent_memory) {
+            ("memory_store", Some(mem)) => {
+                Box::new(MemoryStoreTool::new(mem.clone(), self.security.clone()))
+            }
+            ("memory_recall", Some(mem)) => Box::new(MemoryRecallTool::new(mem.clone())),
+            ("memory_forget", Some(mem)) => {
+                Box::new(MemoryForgetTool::new(mem.clone(), self.security.clone()))
+            }
+            ("memory_export", Some(mem)) => Box::new(MemoryExportTool::new(mem.clone())),
+            ("memory_purge", Some(mem)) => {
+                Box::new(MemoryPurgeTool::new(mem.clone(), self.security.clone()))
+            }
+            _ => Box::new(ToolArcRef::new(tool)),
+        }
     }
 
     /// Directory where background delegate results are stored.
@@ -612,6 +660,7 @@ impl DelegateTool {
         let workspace_dir = self.workspace_dir.clone();
         let child_token = self.cancellation_token.child_token();
         let task_id_clone = task_id.clone();
+        let memory = self.memory.clone();
 
         tokio::spawn(async move {
             // Build an inner DelegateTool for the spawned context
@@ -626,6 +675,7 @@ impl DelegateTool {
                 delegate_config,
                 workspace_dir: workspace_dir.clone(),
                 cancellation_token: child_token.clone(),
+                memory,
             };
 
             let args_inner = json!({
@@ -767,6 +817,7 @@ impl DelegateTool {
             let delegate_config = self.delegate_config.clone();
             let workspace_dir = self.workspace_dir.clone();
             let cancellation_token = self.cancellation_token.child_token();
+            let memory = self.memory.clone();
             let agent_name = agent_name.clone();
             let prompt = prompt.to_string();
             let args_clone = args.clone();
@@ -783,6 +834,7 @@ impl DelegateTool {
                     delegate_config,
                     workspace_dir,
                     cancellation_token,
+                    memory,
                 };
                 let result = Box::pin(inner.execute_sync(&agent_name, &prompt, &args_clone)).await;
                 (agent_name, result)
@@ -1083,13 +1135,14 @@ impl DelegateTool {
             .filter(|name| !name.is_empty())
             .collect::<std::collections::HashSet<_>>();
 
+        let agent_memory = self.get_agent_memory(agent_config);
         let sub_tools: Vec<Box<dyn Tool>> = {
             let parent_tools = self.parent_tools.read();
             parent_tools
                 .iter()
                 .filter(|tool| allowed.contains(tool.name()))
                 .filter(|tool| tool.name() != "delegate")
-                .map(|tool| Box::new(ToolArcRef::new(tool.clone())) as Box<dyn Tool>)
+                .map(|tool| self.clone_sub_tool_for_agent(tool.clone(), agent_memory.as_ref()))
                 .collect()
         };
 
@@ -1121,7 +1174,7 @@ impl DelegateTool {
             .unwrap_or(self.delegate_config.agentic_timeout_secs);
         let result = tokio::time::timeout(
             Duration::from_secs(agentic_timeout_secs),
-            run_tool_call_loop(
+            run_tool_call_loop_with_dispatch_mode(
                 provider,
                 &mut history,
                 &sub_tools,
@@ -1146,6 +1199,7 @@ impl DelegateTool {
                 0,    // max_tool_result_chars: inherit from parent config in future
                 0,    // context_token_budget: 0 = disabled for subagents
                 None, // shared_budget: TODO thread from parent in future
+                ToolDispatchMode::NativeIfSupported,
             ),
         )
         .await;
@@ -1235,6 +1289,7 @@ mod tests {
     use crate::config::schema::{
         DEFAULT_DELEGATE_AGENTIC_TIMEOUT_SECS, DEFAULT_DELEGATE_TIMEOUT_SECS,
     };
+    use crate::memory::{MemoryCategory, SqliteMemory};
     use crate::providers::{ChatRequest, ChatResponse, ToolCall};
     use crate::security::{AutonomyLevel, SecurityPolicy};
     use anyhow::anyhow;
@@ -1260,6 +1315,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         agents.insert(
@@ -1277,6 +1333,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         agents
@@ -1362,6 +1419,50 @@ mod tests {
         }
     }
 
+    struct MemoryStoreThenFinalProvider;
+
+    #[async_trait]
+    impl Provider for MemoryStoreThenFinalProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok("unused".to_string())
+        }
+
+        async fn chat(
+            &self,
+            request: ChatRequest<'_>,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            let has_tool_message = request.messages.iter().any(|m| m.role == "tool");
+            if has_tool_message {
+                Ok(ChatResponse {
+                    text: Some("memory stored".to_string()),
+                    tool_calls: Vec::new(),
+                    usage: None,
+                    reasoning_content: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    text: None,
+                    tool_calls: vec![ToolCall {
+                        id: "call_mem".to_string(),
+                        name: "memory_store".to_string(),
+                        arguments: "{\"key\":\"delegated_fact\",\"content\":\"scoped value\"}"
+                            .to_string(),
+                    }],
+                    usage: None,
+                    reasoning_content: None,
+                })
+            }
+        }
+    }
+
     struct InfiniteToolCallProvider;
 
     #[async_trait]
@@ -1433,6 +1534,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         }
     }
 
@@ -1548,6 +1650,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1661,6 +1764,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1701,6 +1805,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let tool = DelegateTool::new(agents, None, test_security());
@@ -1878,6 +1983,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn execute_agentic_stores_memories_in_agent_namespace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let memory = Arc::new(SqliteMemory::new(tmp.path()).unwrap()) as Arc<dyn Memory>;
+        memory
+            .store("parent_fact", "parent value", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+
+        let mut config = agentic_config(vec!["memory_store".to_string()], 4);
+        config.memory_namespace = Some("delegate_agent_ns".to_string());
+
+        let parent_tools = Arc::new(RwLock::new(vec![Arc::new(MemoryStoreTool::new(
+            memory.clone(),
+            test_security(),
+        )) as Arc<dyn Tool>]));
+        let tool = DelegateTool::new(HashMap::new(), None, test_security())
+            .with_parent_tools(parent_tools)
+            .with_memory(memory.clone());
+
+        let provider = MemoryStoreThenFinalProvider;
+        let result = tool
+            .execute_agentic("agentic", &config, &provider, "remember this", 0.2)
+            .await
+            .unwrap();
+
+        assert!(result.success, "Expected success, got: {:?}", result.error);
+
+        let delegated_entry = memory
+            .get("delegated_fact")
+            .await
+            .unwrap()
+            .expect("delegated memory should be stored");
+        assert_eq!(delegated_entry.namespace, "delegate_agent_ns");
+
+        let parent_entry = memory
+            .get("parent_fact")
+            .await
+            .unwrap()
+            .expect("parent memory should remain accessible in default namespace");
+        assert_eq!(parent_entry.namespace, "default");
+    }
+
     /// MCP tools pushed into the shared parent_tools handle after DelegateTool
     /// construction must be visible to the sub-agent tool list.
     #[derive(Default)]
@@ -1989,6 +2137,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2042,6 +2191,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         struct MockShellTool;
@@ -2112,6 +2262,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
         assert_eq!(
             config.timeout_secs.unwrap_or(DEFAULT_DELEGATE_TIMEOUT_SECS),
@@ -2140,6 +2291,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2173,6 +2325,7 @@ mod tests {
             timeout_secs: Some(60),
             agentic_timeout_secs: Some(600),
             skills_directory: None,
+            memory_namespace: None,
         };
         assert_eq!(
             config.timeout_secs.unwrap_or(DEFAULT_DELEGATE_TIMEOUT_SECS),
@@ -2228,6 +2381,7 @@ mod tests {
                 timeout_secs: Some(0),
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2255,6 +2409,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: Some(0),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2282,6 +2437,7 @@ mod tests {
                 timeout_secs: Some(7200),
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2309,6 +2465,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: Some(5000),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         let err = config.validate().unwrap_err();
@@ -2336,6 +2493,7 @@ mod tests {
                 timeout_secs: Some(3600),
                 agentic_timeout_secs: Some(3600),
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         assert!(config.validate().is_ok());
@@ -2359,6 +2517,7 @@ mod tests {
                 timeout_secs: None,
                 agentic_timeout_secs: None,
                 skills_directory: None,
+                memory_namespace: None,
             },
         );
         assert!(config.validate().is_ok());
@@ -2391,6 +2550,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: Some("skills/code-review".to_string()),
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
@@ -2437,6 +2597,7 @@ mod tests {
             timeout_secs: None,
             agentic_timeout_secs: None,
             skills_directory: None,
+            memory_namespace: None,
         };
 
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];

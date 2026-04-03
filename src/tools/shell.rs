@@ -145,14 +145,6 @@ impl Tool for ShellTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        if self.security.is_rate_limited() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: too many actions in the last hour".into()),
-            });
-        }
-
         match self.security.validate_command_execution(command, approved) {
             Ok(_) => {}
             Err(reason) => {
@@ -162,22 +154,6 @@ impl Tool for ShellTool {
                     error: Some(reason),
                 });
             }
-        }
-
-        if let Some(path) = self.security.forbidden_path_argument(command) {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Path blocked by security policy: {path}")),
-            });
-        }
-
-        if !self.security.record_action() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: action budget exhausted".into()),
-            });
         }
 
         // Execute with timeout to prevent hanging commands.
@@ -269,6 +245,7 @@ mod tests {
     use super::*;
     use crate::runtime::{NativeRuntime, RuntimeAdapter};
     use crate::security::{AutonomyLevel, SecurityPolicy};
+    use crate::tools::wrappers::{PathGuardedTool, RateLimitedTool};
 
     fn test_security(autonomy: AutonomyLevel) -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {
@@ -280,6 +257,43 @@ mod tests {
 
     fn test_runtime() -> Arc<dyn RuntimeAdapter> {
         Arc::new(NativeRuntime::new())
+    }
+
+    fn forbidden_cat_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "type C:\\Windows\\win.ini"
+        } else {
+            "cat /etc/passwd"
+        }
+    }
+
+    fn forbidden_grep_file_assignment_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "grep --file=C:\\Windows\\win.ini root .\\src"
+        } else {
+            "grep --file=/etc/passwd root ./src"
+        }
+    }
+
+    fn forbidden_grep_short_option_command() -> &'static str {
+        if cfg!(target_os = "windows") {
+            "grep -fC:\\Windows\\win.ini root .\\src"
+        } else {
+            "grep -f/etc/passwd root ./src"
+        }
+    }
+
+    /// Returns the fully-wrapped shell tool as it is composed in production:
+    /// PathGuarded(RateLimited(ShellTool)). Tests that verify path-blocking or
+    /// rate-limiting behavior must use this helper so they exercise the wrappers.
+    fn wrapped_shell(security: Arc<SecurityPolicy>) -> PathGuardedTool<RateLimitedTool<ShellTool>> {
+        PathGuardedTool::new(
+            RateLimitedTool::new(
+                ShellTool::new(security.clone(), test_runtime()),
+                security.clone(),
+            ),
+            security,
+        )
     }
 
     #[test]
@@ -376,9 +390,9 @@ mod tests {
 
     #[tokio::test]
     async fn shell_blocks_absolute_path_argument() {
-        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let tool = wrapped_shell(test_security(AutonomyLevel::Supervised));
         let result = tool
-            .execute(json!({"command": "cat /etc/passwd"}))
+            .execute(json!({"command": forbidden_cat_command()}))
             .await
             .expect("absolute path argument should be blocked");
         assert!(!result.success);
@@ -393,9 +407,9 @@ mod tests {
 
     #[tokio::test]
     async fn shell_blocks_option_assignment_path_argument() {
-        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let tool = wrapped_shell(test_security(AutonomyLevel::Supervised));
         let result = tool
-            .execute(json!({"command": "grep --file=/etc/passwd root ./src"}))
+            .execute(json!({"command": forbidden_grep_file_assignment_command()}))
             .await
             .expect("option-assigned forbidden path should be blocked");
         assert!(!result.success);
@@ -410,9 +424,9 @@ mod tests {
 
     #[tokio::test]
     async fn shell_blocks_short_option_attached_path_argument() {
-        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let tool = wrapped_shell(test_security(AutonomyLevel::Supervised));
         let result = tool
-            .execute(json!({"command": "grep -f/etc/passwd root ./src"}))
+            .execute(json!({"command": forbidden_grep_short_option_command()}))
             .await
             .expect("short option attached forbidden path should be blocked");
         assert!(!result.success);
@@ -427,7 +441,7 @@ mod tests {
 
     #[tokio::test]
     async fn shell_blocks_tilde_user_path_argument() {
-        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let tool = wrapped_shell(test_security(AutonomyLevel::Supervised));
         let result = tool
             .execute(json!({"command": "cat ~root/.ssh/id_rsa"}))
             .await
@@ -698,7 +712,7 @@ mod tests {
             workspace_dir: std::env::temp_dir(),
             ..SecurityPolicy::default()
         });
-        let tool = ShellTool::new(security, test_runtime());
+        let tool = wrapped_shell(security);
         let result = tool
             .execute(json!({"command": "echo test"}))
             .await
@@ -735,12 +749,13 @@ mod tests {
     #[tokio::test]
     async fn shell_record_action_budget_exhaustion() {
         let security = Arc::new(SecurityPolicy {
-            autonomy: AutonomyLevel::Full,
+            autonomy: AutonomyLevel::Supervised,
+            allowed_commands: vec!["cat".into(), "echo".into(), "type".into()],
             max_actions_per_hour: 1,
             workspace_dir: std::env::temp_dir(),
             ..SecurityPolicy::default()
         });
-        let tool = ShellTool::new(security, test_runtime());
+        let tool = wrapped_shell(security);
 
         let r1 = tool
             .execute(json!({"command": "echo first"}))
@@ -757,6 +772,40 @@ mod tests {
             r2.error.as_deref().unwrap_or("").contains("Rate limit")
                 || r2.error.as_deref().unwrap_or("").contains("budget")
         );
+    }
+
+    #[tokio::test]
+    async fn shell_forbidden_path_does_not_consume_action_budget() {
+        let security = Arc::new(SecurityPolicy {
+            autonomy: AutonomyLevel::Full,
+            max_actions_per_hour: 1,
+            workspace_dir: std::env::temp_dir(),
+            ..SecurityPolicy::default()
+        });
+        let tool = wrapped_shell(security);
+
+        let blocked = tool
+            .execute(json!({"command": forbidden_cat_command()}))
+            .await
+            .expect("forbidden path command should return a result");
+        assert!(!blocked.success);
+        assert!(
+            blocked
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Path blocked")
+        );
+
+        let allowed = tool
+            .execute(json!({"command": "echo still-has-budget"}))
+            .await
+            .expect("safe command should still have budget after path denial");
+        assert!(
+            allowed.success,
+            "path denial must not consume action budget"
+        );
+        assert!(allowed.output.contains("still-has-budget"));
     }
 
     // ── Sandbox integration tests ────────────────────────

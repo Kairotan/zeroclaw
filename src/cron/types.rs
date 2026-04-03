@@ -233,6 +233,10 @@ pub struct CronJob {
     /// When `None`, all tools are available (backward compatible default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    /// Requesting channel user who created this job, used to bind approval
+    /// button clicks when the scheduler later executes the agent job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_requester_user_id: Option<String>,
     /// How the job was created: `"imperative"` (CLI/API) or `"declarative"` (config).
     #[serde(default = "default_source")]
     pub source: String,
@@ -323,5 +327,35 @@ mod tests {
     fn job_type_try_from_rejects_invalid_values() {
         assert!(JobType::try_from("").is_err());
         assert!(JobType::try_from("unknown").is_err());
+    }
+
+    #[test]
+    fn validated_mention_accepts_supported_channel_ids_and_formats_them() {
+        assert_eq!(
+            ValidatedMention::try_new("discord", "123456789012345678")
+                .unwrap()
+                .to_string(),
+            "<@123456789012345678>"
+        );
+        assert_eq!(
+            ValidatedMention::try_new("slack", "U12345678")
+                .unwrap()
+                .to_string(),
+            "<@U12345678>"
+        );
+        assert_eq!(
+            ValidatedMention::try_new("mattermost", "release-bot_1")
+                .unwrap()
+                .to_string(),
+            "@release-bot_1"
+        );
+    }
+
+    #[test]
+    fn validated_mention_rejects_unsupported_or_broad_mentions() {
+        assert!(ValidatedMention::try_new("discord", "@everyone").is_err());
+        assert!(ValidatedMention::try_new("slack", "channel").is_err());
+        assert!(ValidatedMention::try_new("mattermost", "@all").is_err());
+        assert!(ValidatedMention::try_new("telegram", "123456").is_err());
     }
 }

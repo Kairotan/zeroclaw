@@ -152,6 +152,76 @@ pub(crate) fn filter_by_allowed_tools(
     }
 }
 
+tokio::task_local! {
+    /// Stable thread/conversation identifier from the incoming channel message.
+    /// Used by [`PerSenderTracker`] to isolate rate-limit buckets per chat.
+    /// Set from the channel's thread ID, topic ID, or message ID.
+    pub static TOOL_LOOP_THREAD_ID: Option<String>;
+}
+
+tokio::task_local! {
+    /// Requesting channel user for the current tool loop.
+    /// Used to bind channel approval decisions to the original requester.
+    static TOOL_LOOP_REQUESTER_USER_ID: Option<String>;
+}
+
+/// Run a future with the thread ID set in task-local storage.
+/// Rate-limiting reads this to assign per-sender buckets.
+pub async fn scope_thread_id<F>(thread_id: Option<String>, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TOOL_LOOP_THREAD_ID.scope(thread_id, future).await
+}
+
+/// Run a future with both thread and requester IDs set in task-local storage.
+pub async fn scope_thread_and_requester_ids<F>(
+    thread_id: Option<String>,
+    requester_user_id: Option<String>,
+    future: F,
+) -> F::Output
+where
+    F: std::future::Future,
+{
+    TOOL_LOOP_THREAD_ID
+        .scope(
+            thread_id,
+            TOOL_LOOP_REQUESTER_USER_ID.scope(requester_user_id, future),
+        )
+        .await
+}
+
+/// Return the channel requester currently scoped to this tool loop, if any.
+pub fn current_tool_loop_requester_user_id() -> Option<String> {
+    TOOL_LOOP_REQUESTER_USER_ID
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
+}
+
+/// Tool dispatch strategy selected from `[agent] tool_dispatcher`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolDispatchMode {
+    /// Use native provider tool calls when the provider supports them.
+    NativeIfSupported,
+    /// Force XML tool-call prompting/parsing even if native tools are available.
+    XmlOnly,
+}
+
+impl ToolDispatchMode {
+    pub(crate) fn from_config_value(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("xml") {
+            Self::XmlOnly
+        } else {
+            Self::NativeIfSupported
+        }
+    }
+
+    fn allows_native_tools(self, provider_supports_native_tools: bool) -> bool {
+        matches!(self, Self::NativeIfSupported) && provider_supports_native_tools
+    }
+}
+
 /// Computes the list of MCP tool names that should be excluded for a given turn
 /// based on `tool_filter_groups` and the user message.
 ///
@@ -2150,8 +2220,9 @@ pub(crate) async fn agent_turn(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     model_switch_callback: Option<ModelSwitchCallback>,
+    tool_dispatch_mode: ToolDispatchMode,
 ) -> Result<String> {
-    run_tool_call_loop(
+    run_tool_call_loop_with_dispatch_mode(
         provider,
         history,
         tools_registry,
@@ -2176,6 +2247,7 @@ pub(crate) async fn agent_turn(
         0,    // max_tool_result_chars: 0 = disabled (legacy callers)
         0,    // context_token_budget: 0 = disabled (legacy callers)
         None, // shared_budget: no shared budget for legacy callers
+        tool_dispatch_mode,
     )
     .await
 }
@@ -2315,6 +2387,64 @@ pub(crate) async fn run_tool_call_loop(
     context_token_budget: usize,
     shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
 ) -> Result<String> {
+    run_tool_call_loop_with_dispatch_mode(
+        provider,
+        history,
+        tools_registry,
+        observer,
+        provider_name,
+        model,
+        temperature,
+        silent,
+        approval,
+        channel_name,
+        channel_reply_target,
+        multimodal_config,
+        max_tool_iterations,
+        cancellation_token,
+        on_delta,
+        hooks,
+        excluded_tools,
+        dedup_exempt_tools,
+        activated_tools,
+        model_switch_callback,
+        pacing,
+        max_tool_result_chars,
+        context_token_budget,
+        shared_budget,
+        ToolDispatchMode::NativeIfSupported,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_tool_call_loop_with_dispatch_mode(
+    provider: &dyn Provider,
+    history: &mut Vec<ChatMessage>,
+    tools_registry: &[Box<dyn Tool>],
+    observer: &dyn Observer,
+    provider_name: &str,
+    model: &str,
+    temperature: f64,
+    silent: bool,
+    approval: Option<&ApprovalManager>,
+    channel_name: &str,
+    channel_reply_target: Option<&str>,
+    multimodal_config: &crate::config::MultimodalConfig,
+    max_tool_iterations: usize,
+    cancellation_token: Option<CancellationToken>,
+    on_delta: Option<tokio::sync::mpsc::Sender<DraftEvent>>,
+    hooks: Option<&crate::hooks::HookRunner>,
+    excluded_tools: &[String],
+    dedup_exempt_tools: &[String],
+    activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    model_switch_callback: Option<ModelSwitchCallback>,
+    pacing: &crate::config::PacingConfig,
+    max_tool_result_chars: usize,
+    context_token_budget: usize,
+    shared_budget: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    tool_dispatch_mode: ToolDispatchMode,
+) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
@@ -2431,7 +2561,9 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
         }
-        let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
+        let use_native_tools = tool_dispatch_mode
+            .allows_native_tools(provider.supports_native_tools())
+            && !tool_specs.is_empty();
 
         let (max_images, _) = multimodal_config.effective_limits();
         let trimmed_images = crate::agent::history::trim_history_images(history, max_images);
@@ -3054,10 +3186,11 @@ pub(crate) async fn run_tool_call_loop(
                     continue;
                 }
 
-                if mgr.needs_approval(&tool_name) {
+                if mgr.needs_approval_for_channel(channel_name, &tool_name) {
                     let request = ApprovalRequest {
                         tool_name: tool_name.clone(),
                         arguments: tool_args.clone(),
+                        requester_user_id: current_tool_loop_requester_user_id(),
                     };
 
                     // Interactive CLI: prompt the operator.
@@ -3885,7 +4018,8 @@ pub async fn run(
     } else {
         None
     };
-    let native_tools = provider.supports_native_tools();
+    let tool_dispatch_mode = ToolDispatchMode::from_config_value(&config.agent.tool_dispatcher);
+    let native_tools = tool_dispatch_mode.allows_native_tools(provider.supports_native_tools());
     let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
         &config.workspace_dir,
         &model_name,
@@ -4039,31 +4173,35 @@ pub async fn run(
         #[allow(unused_assignments)]
         let mut response = String::new();
         loop {
-            match run_tool_call_loop(
-                provider.as_ref(),
-                &mut history,
-                &tools_registry,
-                observer.as_ref(),
-                &provider_name,
-                &model_name,
-                effective_temperature,
-                false,
-                approval_manager.as_ref(),
-                channel_name,
-                run_reply_target.as_deref(),
-                &config.multimodal,
-                config.agent.max_tool_iterations,
-                None,
-                None,
-                None,
-                &excluded_tools,
-                &config.agent.tool_call_dedup_exempt,
-                activated_handle.as_ref(),
-                Some(model_switch_callback.clone()),
-                &config.pacing,
-                config.agent.max_tool_result_chars,
-                config.agent.max_context_tokens,
-                None, // shared_budget
+            match scope_thread_id(
+                run_reply_target.clone(),
+                run_tool_call_loop_with_dispatch_mode(
+                    provider.as_ref(),
+                    &mut history,
+                    &tools_registry,
+                    observer.as_ref(),
+                    &provider_name,
+                    &model_name,
+                    effective_temperature,
+                    false,
+                    approval_manager.as_ref(),
+                    channel_name,
+                    run_reply_target.as_deref(),
+                    &config.multimodal,
+                    config.agent.max_tool_iterations,
+                    None,
+                    None,
+                    None,
+                    &excluded_tools,
+                    &config.agent.tool_call_dedup_exempt,
+                    activated_handle.as_ref(),
+                    Some(model_switch_callback.clone()),
+                    &config.pacing,
+                    config.agent.max_tool_result_chars,
+                    config.agent.max_context_tokens,
+                    None, // shared_budget
+                    tool_dispatch_mode,
+                ),
             )
             .await
             {
@@ -4345,31 +4483,35 @@ pub async fn run(
             });
 
             let response = loop {
-                match run_tool_call_loop(
-                    provider.as_ref(),
-                    &mut history,
-                    &tools_registry,
-                    observer.as_ref(),
-                    &provider_name,
-                    &model_name,
-                    turn_temperature,
-                    true,
-                    approval_manager.as_ref(),
-                    channel_name,
-                    run_reply_target.as_deref(),
-                    &config.multimodal,
-                    config.agent.max_tool_iterations,
-                    Some(cancel_token.clone()),
-                    Some(delta_tx.clone()),
-                    None,
-                    &excluded_tools,
-                    &config.agent.tool_call_dedup_exempt,
-                    activated_handle.as_ref(),
-                    Some(model_switch_callback.clone()),
-                    &config.pacing,
-                    config.agent.max_tool_result_chars,
-                    config.agent.max_context_tokens,
-                    None, // shared_budget
+                match scope_thread_id(
+                    run_reply_target.clone(),
+                    run_tool_call_loop_with_dispatch_mode(
+                        provider.as_ref(),
+                        &mut history,
+                        &tools_registry,
+                        observer.as_ref(),
+                        &provider_name,
+                        &model_name,
+                        turn_temperature,
+                        true,
+                        approval_manager.as_ref(),
+                        channel_name,
+                        run_reply_target.as_deref(),
+                        &config.multimodal,
+                        config.agent.max_tool_iterations,
+                        Some(cancel_token.clone()),
+                        Some(delta_tx.clone()),
+                        None,
+                        &excluded_tools,
+                        &config.agent.tool_call_dedup_exempt,
+                        activated_handle.as_ref(),
+                        Some(model_switch_callback.clone()),
+                        &config.pacing,
+                        config.agent.max_tool_result_chars,
+                        config.agent.max_context_tokens,
+                        None, // shared_budget
+                        tool_dispatch_mode,
+                    ),
                 )
                 .await
                 {
@@ -4776,7 +4918,8 @@ pub async fn process_message(
     } else {
         None
     };
-    let native_tools = provider.supports_native_tools();
+    let tool_dispatch_mode = ToolDispatchMode::from_config_value(&config.agent.tool_dispatcher);
+    let native_tools = tool_dispatch_mode.allows_native_tools(provider.supports_native_tools());
     let mut system_prompt = crate::channels::build_system_prompt_with_mode_and_autonomy(
         &config.workspace_dir,
         &model_name,
@@ -4874,6 +5017,7 @@ pub async fn process_message(
         &config.agent.tool_call_dedup_exempt,
         activated_handle_pm.as_ref(),
         None,
+        tool_dispatch_mode,
     )
     .await
 }
@@ -7399,6 +7543,7 @@ mod tests {
                 &[],
                 Some(&activated),
                 None,
+                ToolDispatchMode::NativeIfSupported,
             )
             .await
             .expect("wrapper path should execute activated tools");
